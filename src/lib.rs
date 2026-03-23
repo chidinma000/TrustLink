@@ -16,7 +16,7 @@ mod events;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 use types::{Attestation, AttestationStatus, Error};
 use storage::Storage;
 use validation::Validation;
@@ -487,5 +487,37 @@ impl TrustLinkContract {
     /// ```
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         Storage::get_admin(&env)
+    }
+
+    /// Upgrade the contract WASM to a new version.
+    ///
+    /// Uses Soroban's built-in upgrade mechanism. All existing storage is
+    /// preserved — only the executable code is replaced. Any required storage
+    /// migration should be performed in the new WASM's `migrate` function
+    /// immediately after upgrading.
+    ///
+    /// Only the current admin may call this function.
+    ///
+    /// # Parameters
+    /// - `admin` — current administrator address (must authorize).
+    /// - `new_wasm_hash` — 32-byte hash of the new contract WASM, obtained
+    ///   after uploading the WASM with `soroban contract upload`.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract has not been initialized.
+    /// - [`Error::Unauthorized`] — `admin` is not the registered administrator.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// client.upgrade(&admin, &new_wasm_hash);
+    /// ```
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        admin.require_auth();
+        Validation::require_admin(&env, &admin)?;
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Events::contract_upgraded(&env, &admin);
+
+        Ok(())
     }
 }

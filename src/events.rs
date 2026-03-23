@@ -70,4 +70,21 @@ impl Events {
             attestation_id.clone(),
         );
     }
+
+    /// Emit an event when the contract WASM is upgraded.
+    ///
+    /// # Event schema
+    /// ```text
+    /// topics: ("upgraded",)
+    /// data:   admin: Address
+    /// ```
+    ///
+    /// # Parameters
+    /// - `admin` — address that triggered the upgrade.
+    pub fn contract_upgraded(env: &Env, admin: &Address) {
+        env.events().publish(
+            (symbol_short!("upgraded"),),
+            admin.clone(),
+        );
+    }
 }
