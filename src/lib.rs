@@ -121,6 +121,44 @@ impl TrustLinkContract {
         Ok(())
     }
 
+    /// Revoke multiple attestations in a single call (issuer only).
+    /// Auth is checked once for the issuer. Each attestation is validated
+    /// individually — if any attestation does not belong to the caller or is
+    /// already revoked the corresponding error is returned immediately and no
+    /// further attestations are processed.
+    /// Returns the count of successfully revoked attestations.
+    pub fn revoke_attestations_batch(
+        env: Env,
+        issuer: Address,
+        attestation_ids: Vec<String>,
+    ) -> Result<u32, Error> {
+        // Single auth check for the entire batch
+        issuer.require_auth();
+        Validation::require_issuer(&env, &issuer)?;
+
+        let mut count: u32 = 0;
+
+        for id in attestation_ids.iter() {
+            let mut attestation = Storage::get_attestation(&env, &id)?;
+
+            if attestation.issuer != issuer {
+                return Err(Error::Unauthorized);
+            }
+
+            if attestation.revoked {
+                return Err(Error::AlreadyRevoked);
+            }
+
+            attestation.revoked = true;
+            Storage::set_attestation(&env, &attestation);
+            Events::attestation_revoked(&env, &id, &issuer);
+
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
     /// Check if an address has a valid attestation of a given type.
     /// Emits an `expired` event for any expired (non-revoked) attestation encountered.
     pub fn has_valid_claim(
