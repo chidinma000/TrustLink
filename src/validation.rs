@@ -12,9 +12,9 @@
 //! - [`Validation::require_issuer`] — verifies the caller is present in the
 //!   issuer registry. Returns [`Error::Unauthorized`] if not registered.
 
-use soroban_sdk::{Address, Env};
 use crate::storage::Storage;
 use crate::types::Error;
+use soroban_sdk::{Address, Env};
 
 /// Authorization checks used by contract entry points.
 pub struct Validation;

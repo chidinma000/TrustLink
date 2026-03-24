@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `import_attestation(admin, issuer, subject, claim_type, timestamp, expiration)` for historical migration from an external verified source.
+- `Attestation.imported` flag so imported records are distinguishable from native attestations.
+- `imported` event for an auditable attestation migration trail.
+
 <!-- Add new changes here before they are released. Use the categories below:
 ### Added
 ### Changed

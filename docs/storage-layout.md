@@ -112,7 +112,7 @@ bool   // always true
 | Tier          | Persistent                                               |
 | TTL           | Per-key, 30 days, refreshed on every `set_attestation`   |
 | Value type    | `Attestation` struct                                     |
-| Written by    | `create_attestation`, `revoke_attestation`, `renew_attestation`, `update_expiration`, `revoke_attestations_batch` |
+| Written by    | `create_attestation`, `import_attestation`, `revoke_attestation`, `renew_attestation`, `update_expiration`, `revoke_attestations_batch` |
 | Read by       | `get_attestation`, `get_attestation_status`, `has_valid_claim`, `has_any_claim`, `has_all_claims`, `get_valid_claims`, `get_attestation_by_type` |
 
 The primary attestation record. The key parameter is the 32-character hex
@@ -129,7 +129,9 @@ pub struct Attestation {
     pub timestamp:   u64,             // ledger timestamp at creation (seconds)
     pub expiration:  Option<u64>,     // optional expiry (seconds); None = no expiry
     pub revoked:     bool,            // true once revoke_attestation is called
+    pub metadata:    Option<String>,  // optional issuer-supplied metadata
     pub valid_from:  Option<u64>,     // optional future activation time (seconds)
+    pub imported:    bool,            // true when imported from an external source
 }
 ```
 
@@ -153,7 +155,7 @@ Priority order: `Pending` > `Revoked` > `Expired` > `Valid`.
 | Tier          | Persistent                                                   |
 | TTL           | Per-key, 30 days, refreshed on every `add_subject_attestation` |
 | Value type    | `Vec<String>` — ordered list of attestation IDs             |
-| Written by    | `create_attestation`                                         |
+| Written by    | `create_attestation`, `import_attestation`                    |
 | Read by       | `get_subject_attestations`, `has_valid_claim`, `has_any_claim`, `has_all_claims`, `get_valid_claims`, `get_attestation_by_type` |
 
 An append-only index mapping a subject address to all attestation IDs ever
@@ -175,7 +177,7 @@ Vec<String>   // ordered list of 32-char hex attestation IDs
 | Tier          | Persistent                                                  |
 | TTL           | Per-key, 30 days, refreshed on every `add_issuer_attestation` |
 | Value type    | `Vec<String>` — ordered list of attestation IDs            |
-| Written by    | `create_attestation`                                        |
+| Written by    | `create_attestation`, `import_attestation`                 |
 | Read by       | `get_issuer_attestations`                                   |
 
 An append-only index mapping an issuer address to all attestation IDs that

@@ -25,8 +25,8 @@
 //! - `ClaimTypeList` — ordered `Vec<String>` of all registered claim type IDs;
 //!   used for pagination via `list_claim_types`.
 
-use soroban_sdk::{contracttype, Address, Env, String, Vec};
 use crate::types::{Attestation, ClaimTypeInfo, Error, IssuerMetadata};
+use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 /// Keys used to address data in contract storage.
 #[contracttype]
@@ -69,7 +69,9 @@ impl Storage {
     /// Persist `admin` in instance storage and refresh the instance TTL.
     pub fn set_admin(env: &Env, admin: &Address) {
         env.storage().instance().set(&StorageKey::Admin, admin);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME, INSTANCE_LIFETIME);
     }
 
     /// Persist `version` in instance storage alongside the admin.
@@ -97,31 +99,41 @@ impl Storage {
 
     /// Return `true` if `address` is in the issuer registry.
     pub fn is_issuer(env: &Env, address: &Address) -> bool {
-        env.storage().persistent().has(&StorageKey::Issuer(address.clone()))
+        env.storage()
+            .persistent()
+            .has(&StorageKey::Issuer(address.clone()))
     }
 
     /// Add `issuer` to the registry and refresh its TTL.
     pub fn add_issuer(env: &Env, issuer: &Address) {
         let key = StorageKey::Issuer(issuer.clone());
         env.storage().persistent().set(&key, &true);
-        env.storage().persistent().extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
     }
 
     /// Remove `issuer` from the registry.
     pub fn remove_issuer(env: &Env, issuer: &Address) {
-        env.storage().persistent().remove(&StorageKey::Issuer(issuer.clone()));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::Issuer(issuer.clone()));
     }
 
     /// Return `true` if an attestation with `id` exists in storage.
     pub fn has_attestation(env: &Env, id: &String) -> bool {
-        env.storage().persistent().has(&StorageKey::Attestation(id.clone()))
+        env.storage()
+            .persistent()
+            .has(&StorageKey::Attestation(id.clone()))
     }
 
     /// Persist `attestation` and refresh its TTL.
     pub fn set_attestation(env: &Env, attestation: &Attestation) {
         let key = StorageKey::Attestation(attestation.id.clone());
         env.storage().persistent().set(&key, attestation);
-        env.storage().persistent().extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
     }
 
     /// Retrieve an attestation by `id`.
@@ -150,7 +162,9 @@ impl Storage {
         let mut attestations = Self::get_subject_attestations(env, subject);
         attestations.push_back(attestation_id.clone());
         env.storage().persistent().set(&key, &attestations);
-        env.storage().persistent().extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
     }
 
     /// Return the ordered list of attestation IDs created by `issuer`, or an
@@ -168,14 +182,18 @@ impl Storage {
         let mut attestations = Self::get_issuer_attestations(env, issuer);
         attestations.push_back(attestation_id.clone());
         env.storage().persistent().set(&key, &attestations);
-        env.storage().persistent().extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
     }
 
     /// Persist `metadata` for `issuer` and refresh its TTL.
     pub fn set_issuer_metadata(env: &Env, issuer: &Address, metadata: &IssuerMetadata) {
         let key = StorageKey::IssuerMetadata(issuer.clone());
         env.storage().persistent().set(&key, metadata);
-        env.storage().persistent().extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
     }
 
     /// Retrieve metadata for `issuer`, or `None` if not set.
@@ -191,16 +209,21 @@ impl Storage {
         let key = StorageKey::ClaimType(info.claim_type.clone());
         let is_new = !env.storage().persistent().has(&key);
         env.storage().persistent().set(&key, info);
-        env.storage().persistent().extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
         if is_new {
             let list_key = StorageKey::ClaimTypeList;
-            let mut list: Vec<String> = env.storage()
+            let mut list: Vec<String> = env
+                .storage()
                 .persistent()
                 .get(&list_key)
                 .unwrap_or(Vec::new(env));
             list.push_back(info.claim_type.clone());
             env.storage().persistent().set(&list_key, &list);
-            env.storage().persistent().extend_ttl(&list_key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+            env.storage()
+                .persistent()
+                .extend_ttl(&list_key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
         }
     }
 

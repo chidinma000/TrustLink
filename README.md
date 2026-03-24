@@ -1,6 +1,6 @@
 # TrustLink - On-Chain Attestation & Verification System
 
-TrustLink is a Soroban smart contract that provides a reusable trust layer for the Stellar blockchain. It enables trusted issuers (anchors, fintech apps, institutions) to create, manage, and revoke attestations about wallet addresses, allowing other contracts and applications to verify claims before executing financial operations.
+TrustLink is a Soroban smart contract that provides a reusable trust layer for the Stellar blockchain. It enables trusted issuers (anchors, fintech apps, institutions) to create, import, manage, and revoke attestations about wallet addresses, allowing other contracts and applications to verify claims before executing financial operations.
 
 ## Overview
 
@@ -12,6 +12,7 @@ TrustLink solves the problem of decentralized identity verification and trust es
 - **Claim Type Registry**: Admin-managed registry of standard claim types with descriptions
 - **Flexible Claims**: Support for any claim type (KYC_PASSED, ACCREDITED_INVESTOR, MERCHANT_VERIFIED, etc.)
 - **Expiration Support**: Optional time-based expiration for attestations
+- **Historical Import**: Admin can import externally verified attestations with original timestamps
 - **Revocation**: Issuers can revoke attestations at any time
 - **Deterministic IDs**: Attestations have unique, reproducible identifiers
 - **Event Emission**: All state changes emit events for off-chain indexing
@@ -37,13 +38,15 @@ src/
 **Attestation Structure:**
 ```rust
 {
-    id: String,              // Deterministic hash-based ID
-    issuer: Address,         // Who issued the attestation
-    subject: Address,        // Who the attestation is about
-    claim_type: String,      // Type of claim (e.g., "KYC_PASSED")
-    timestamp: u64,          // When it was created
-    expiration: Option<u64>, // Optional expiration time
-    revoked: bool            // Revocation status
+    id: String,               // Deterministic hash-based ID
+    issuer: Address,          // Who issued the attestation
+    subject: Address,         // Who the attestation is about
+    claim_type: String,       // Type of claim (e.g., "KYC_PASSED")
+    timestamp: u64,           // When it was created
+    expiration: Option<u64>,  // Optional expiration time
+    revoked: bool,            // Revocation status
+    metadata: Option<String>, // Optional issuer-supplied metadata
+    imported: bool            // True when migrated from an external source
 }
 ```
 
@@ -110,7 +113,8 @@ let attestation_id = contract.create_attestation(
     &issuer,
     &user_address,
     &String::from_str(&env, "KYC_PASSED"),
-    &None  // No expiration
+    &None,  // No expiration
+    &None   // No metadata
 );
 
 // Create attestation with expiration
@@ -119,8 +123,32 @@ let attestation_id = contract.create_attestation(
     &issuer,
     &user_address,
     &String::from_str(&env, "ACCREDITED_INVESTOR"),
-    &Some(expiration_time)
+    &Some(expiration_time),
+    &None
 );
+```
+
+### Import Historical Attestations
+
+Use this when migrating records from another verified system. The admin performs
+the import, but the imported record is still attached to a registered issuer.
+
+```rust
+let historical_timestamp = 1_700_000_000;
+let expiration = Some(1_731_536_000);
+
+let imported_id = contract.import_attestation(
+    &admin,
+    &issuer,
+    &user_address,
+    &String::from_str(&env, "KYC_PASSED"),
+    &historical_timestamp,
+    &expiration,
+);
+
+let attestation = contract.get_attestation(&imported_id);
+assert!(attestation.imported);
+assert_eq!(attestation.timestamp, historical_timestamp);
 ```
 
 ### Verify Claims
