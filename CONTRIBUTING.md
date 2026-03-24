@@ -2,6 +2,10 @@
 
 Thanks for your interest in contributing! This guide covers everything you need to go from zero to a merged PR.
 
+## New to Stellar or Soroban?
+
+Before diving in, read [docs/stellar-concepts.md](docs/stellar-concepts.md) for a beginner-friendly explanation of ledger timestamps, storage TTL, `require_auth`, and the WASM deployment model — concepts that come up throughout the codebase.
+
 ## Prerequisites
 
 | Tool | Version | Install |
