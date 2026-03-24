@@ -75,13 +75,38 @@ impl Attestation {
         claim_type: &String,
         timestamp: u64,
     ) -> String {
-        use soroban_sdk::xdr::ToXdr;
-        let data = (issuer.clone(), subject.clone(), claim_type.clone(), timestamp);
-        let xdr_bytes = data.to_xdr(env);
-        let hash = env.crypto().sha256(&xdr_bytes);
-        let hash_bytes = hash.to_array();
-        // Use first 16 bytes as ID
-        String::from_bytes(env, &hash_bytes[..16])
+        use soroban_sdk::Bytes;
+        // Strkeys for both account (G...) and contract (C...) addresses are
+        // always 56 ASCII characters. Copy them into fixed-size buffers.
+        let mut issuer_buf = [0u8; 56];
+        let mut subject_buf = [0u8; 56];
+        issuer.to_string().copy_into_slice(&mut issuer_buf);
+        subject.to_string().copy_into_slice(&mut subject_buf);
+
+        // Copy claim_type bytes into a fixed-size buffer (max 128 bytes).
+        let claim_len = claim_type.len() as usize;
+        let mut claim_buf = [0u8; 128];
+        claim_type.copy_into_slice(&mut claim_buf[..claim_len]);
+
+        let mut buf = Bytes::new(env);
+        buf.append(&Bytes::from_slice(env, &issuer_buf));
+        buf.append(&Bytes::from_slice(env, &subject_buf));
+        buf.append(&Bytes::from_slice(env, &claim_buf[..claim_len]));
+        buf.append(&Bytes::from_slice(env, &timestamp.to_be_bytes()));
+
+        let hash = env.crypto().sha256(&buf);
+        let hash_arr = hash.to_array();
+
+        // Hex-encode the first 16 bytes → 32 ASCII characters.
+        // This produces a valid UTF-8 string suitable for soroban_sdk::String.
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut hex_bytes = [0u8; 32];
+        for i in 0..16 {
+            hex_bytes[i * 2]     = HEX[(hash_arr[i] >> 4) as usize];
+            hex_bytes[i * 2 + 1] = HEX[(hash_arr[i] & 0x0f) as usize];
+        }
+        // SAFETY: hex_bytes contains only ASCII hex digits, so it is valid UTF-8.
+        String::from_str(env, core::str::from_utf8(&hex_bytes).unwrap_or(""))
     }
 
     /// Compute the current [`AttestationStatus`] given `current_time`.

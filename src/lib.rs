@@ -16,7 +16,7 @@ mod events;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 use types::{Attestation, AttestationStatus, Error};
 use storage::Storage;
 use validation::Validation;
