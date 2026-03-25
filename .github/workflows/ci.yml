@@ -39,3 +39,34 @@ jobs:
         with:
           files: ./lcov.info
           fail_ci_if_error: true
+
+  bindings:
+    name: TypeScript Bindings
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli --features opt
+
+      - name: Build WASM
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Generate TypeScript bindings
+        run: make bindings
+
+      - name: Fail if bindings are out of date
+        run: |
+          git diff --exit-code bindings/typescript/ || (
+            echo "TypeScript bindings are out of date."
+            echo "Run 'make bindings' locally and commit the updated bindings/typescript/ directory."
+            exit 1
+          )

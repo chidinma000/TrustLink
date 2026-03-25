@@ -191,3 +191,35 @@ Open a GitHub issue with:
 - A clear description of the problem or feature request
 - Steps to reproduce (for bugs)
 - Expected vs actual behaviour
+
+## TypeScript Bindings
+
+TypeScript bindings for the contract ABI live in `bindings/typescript/` and are
+generated from the compiled WASM using the Stellar CLI.
+
+**Prerequisites:**
+
+```bash
+cargo install --locked stellar-cli --features opt
+rustup target add wasm32-unknown-unknown
+```
+
+**Regenerate after any contract interface change:**
+
+```bash
+make bindings
+```
+
+This builds the WASM and runs:
+
+```bash
+stellar contract bindings typescript \
+  --wasm target/wasm32-unknown-unknown/release/trustlink.wasm \
+  --contract-id 0000000000000000000000000000000000000000000000000000000000000001 \
+  --network testnet \
+  --output-dir bindings/typescript
+```
+
+Commit the updated `bindings/typescript/` directory alongside your contract
+changes. CI runs `make check-bindings` and will fail if the committed bindings
+do not match the current WASM.
