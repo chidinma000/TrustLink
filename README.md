@@ -317,6 +317,49 @@ if fully_verified {
 contract.revoke_attestation(&issuer, &attestation_id);
 ```
 
+### Expiration Hooks
+
+Subjects can register a callback contract to be notified when one of their attestations is approaching expiry. This lets wallets, dApps, or automation contracts react before a credential lapses.
+
+**Flow:**
+1. Subject calls `register_expiration_hook` with their callback contract address and how many days before expiry they want to be notified.
+2. Whenever `has_valid_claim` is called and a matching attestation is inside the notification window, TrustLink emits an `exp_hook` event and calls `notify_expiring` on the callback contract.
+3. If the callback call fails for any reason, the failure is silently swallowed — the main `has_valid_claim` result is unaffected.
+4. Subject can overwrite or remove their hook at any time.
+
+**Callback interface** — your contract must implement:
+```rust
+fn notify_expiring(env: Env, subject: Address, attestation_id: String, expiration: u64);
+```
+
+**Usage:**
+```rust
+// Register: notify me 7 days before any attestation expires
+contract.register_expiration_hook(
+    &subject,
+    &my_callback_contract,
+    &7,
+);
+
+// Retrieve the current hook
+let hook = contract.get_expiration_hook(&subject);
+
+// Remove the hook
+contract.remove_expiration_hook(&subject);
+```
+
+**Event emitted when hook fires:**
+```
+topics: ["exp_hook", subject_address]
+data:   (attestation_id, expiration_timestamp)
+```
+
+**Notes:**
+- Only the subject can register or remove their own hook (requires auth).
+- Attestations without an expiration never trigger the hook.
+- A subject can only have one hook at a time; re-registering overwrites the previous one.
+- Failed callback calls do not revert or affect the caller.
+
 ### Multi-Sig Attestations
 
 High-value claims (e.g. `ACCREDITED_INVESTOR`) can require M-of-N registered issuers to co-sign before the attestation becomes active. This prevents a single compromised issuer from unilaterally issuing sensitive credentials.

@@ -978,3 +978,202 @@ fn test_multisig_unregistered_proposer_rejected() {
         client.try_propose_attestation(&unregistered, &subject, &claim_type, &required, &2);
     assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
 }
+
+// ── Expiration hook tests ─────────────────────────────────────────────────────
+
+/// A minimal mock callback contract that records calls via storage.
+#[contract]
+struct MockCallbackContract;
+
+#[contractimpl]
+impl MockCallbackContract {
+    pub fn notify_expiring(env: Env, _subject: Address, _attestation_id: String, _expiration: u64) {
+        // Record that we were called by incrementing a counter in instance storage.
+        let count: u32 = env.storage().instance().get(&soroban_sdk::symbol_short!("calls")).unwrap_or(0);
+        env.storage().instance().set(&soroban_sdk::symbol_short!("calls"), &(count + 1));
+    }
+
+    pub fn call_count(env: Env) -> u32 {
+        env.storage().instance().get(&soroban_sdk::symbol_short!("calls")).unwrap_or(0)
+    }
+}
+
+fn register_callback_contract(env: &Env) -> (Address, MockCallbackContractClient<'_>) {
+    let id = env.register_contract(None, MockCallbackContract);
+    let client = MockCallbackContractClient::new(env, &id);
+    (id, client)
+}
+
+#[test]
+fn test_register_and_get_expiration_hook() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let (callback_id, _) = register_callback_contract(&env);
+
+    client.register_expiration_hook(&subject, &callback_id, &7);
+
+    let hook = client.get_expiration_hook(&subject).unwrap();
+    assert_eq!(hook.subject, subject);
+    assert_eq!(hook.callback_contract, callback_id);
+    assert_eq!(hook.notify_days_before, 7);
+}
+
+#[test]
+fn test_remove_expiration_hook() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let (callback_id, _) = register_callback_contract(&env);
+
+    client.register_expiration_hook(&subject, &callback_id, &7);
+    assert!(client.get_expiration_hook(&subject).is_some());
+
+    client.remove_expiration_hook(&subject);
+    assert!(client.get_expiration_hook(&subject).is_none());
+}
+
+#[test]
+fn test_hook_triggered_when_inside_notification_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let (callback_id, callback_client) = register_callback_contract(&env);
+
+    // Attestation expires in 10 days from t=0.
+    let expiration = 10 * 86_400u64;
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.create_attestation(&issuer, &subject, &claim_type, &Some(expiration), &None, &None);
+
+    // Register hook: notify 7 days before expiry → window starts at day 3.
+    client.register_expiration_hook(&subject, &callback_id, &7);
+
+    // At day 2 — outside window, no call.
+    env.ledger().with_mut(|li| li.timestamp = 2 * 86_400);
+    client.has_valid_claim(&subject, &claim_type);
+    assert_eq!(callback_client.call_count(), 0);
+
+    // At day 4 — inside window (day 3..10), hook fires.
+    env.ledger().with_mut(|li| li.timestamp = 4 * 86_400);
+    let valid = client.has_valid_claim(&subject, &claim_type);
+    assert!(valid);
+    assert_eq!(callback_client.call_count(), 1);
+}
+
+#[test]
+fn test_hook_not_triggered_outside_notification_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let (callback_id, callback_client) = register_callback_contract(&env);
+
+    let expiration = 10 * 86_400u64;
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.create_attestation(&issuer, &subject, &claim_type, &Some(expiration), &None, &None);
+    client.register_expiration_hook(&subject, &callback_id, &3);
+
+    // At day 5 — outside the 3-day window (window starts day 7).
+    env.ledger().with_mut(|li| li.timestamp = 5 * 86_400);
+    client.has_valid_claim(&subject, &claim_type);
+    assert_eq!(callback_client.call_count(), 0);
+}
+
+#[test]
+fn test_hook_not_triggered_for_attestation_without_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let (callback_id, callback_client) = register_callback_contract(&env);
+
+    // No expiration set.
+    client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    client.register_expiration_hook(&subject, &callback_id, &7);
+
+    client.has_valid_claim(&subject, &claim_type);
+    assert_eq!(callback_client.call_count(), 0);
+}
+
+#[test]
+fn test_hook_not_triggered_after_removal() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let (callback_id, callback_client) = register_callback_contract(&env);
+
+    let expiration = 10 * 86_400u64;
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.create_attestation(&issuer, &subject, &claim_type, &Some(expiration), &None, &None);
+    client.register_expiration_hook(&subject, &callback_id, &7);
+
+    // Remove the hook before entering the window.
+    client.remove_expiration_hook(&subject);
+
+    env.ledger().with_mut(|li| li.timestamp = 4 * 86_400);
+    client.has_valid_claim(&subject, &claim_type);
+    assert_eq!(callback_client.call_count(), 0);
+}
+
+#[test]
+fn test_hook_emits_exp_hook_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let (callback_id, _) = register_callback_contract(&env);
+
+    let expiration = 10 * 86_400u64;
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.create_attestation(&issuer, &subject, &claim_type, &Some(expiration), &None, &None);
+    client.register_expiration_hook(&subject, &callback_id, &7);
+
+    env.ledger().with_mut(|li| li.timestamp = 4 * 86_400);
+    client.has_valid_claim(&subject, &claim_type);
+
+    let events = env.events().all();
+    let mut found = false;
+    for (_, topics, _) in events.iter() {
+        let topic0: soroban_sdk::Symbol =
+            soroban_sdk::TryFromVal::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        if topic0 == soroban_sdk::symbol_short!("exp_hook") {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "exp_hook event not found");
+}
+
+#[test]
+fn test_hook_overwrite_replaces_previous() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let (callback_id1, _) = register_callback_contract(&env);
+    let (callback_id2, _) = register_callback_contract(&env);
+
+    client.register_expiration_hook(&subject, &callback_id1, &5);
+    client.register_expiration_hook(&subject, &callback_id2, &10);
+
+    let hook = client.get_expiration_hook(&subject).unwrap();
+    assert_eq!(hook.callback_contract, callback_id2);
+    assert_eq!(hook.notify_days_before, 10);
+}

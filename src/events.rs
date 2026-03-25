@@ -149,4 +149,17 @@ impl Events {
             (proposal_id.clone(), attestation_id.clone()),
         );
     }
+
+    /// Emitted when a subject's attestation enters the expiration notification window.
+    pub fn expiration_hook_triggered(
+        env: &Env,
+        subject: &Address,
+        attestation_id: &String,
+        expiration: u64,
+    ) {
+        env.events().publish(
+            (symbol_short!("exp_hook"), subject.clone()),
+            (attestation_id.clone(), expiration),
+        );
+    }
 }

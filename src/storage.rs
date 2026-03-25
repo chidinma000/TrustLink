@@ -27,7 +27,7 @@
 //!   used for pagination via `list_claim_types`.
 //! - `FeeConfig` — global attestation fee settings.
 
-use crate::types::{Attestation, ClaimTypeInfo, Error, FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig};
+use crate::types::{Attestation, ClaimTypeInfo, Error, ExpirationHook, FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig};
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 /// Keys used to address data in contract storage.
@@ -59,6 +59,8 @@ pub enum StorageKey {
     ClaimTypeList,
     /// A multi-sig attestation proposal keyed by its ID.
     MultiSigProposal(String),
+    /// Expiration notification hook registered by a subject.
+    ExpirationHook(Address),
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -320,5 +322,27 @@ impl Storage {
         env.storage()
             .persistent()
             .has(&StorageKey::MultiSigProposal(id.clone()))
+    }
+
+    /// Persist an [`ExpirationHook`] for `subject` and refresh its TTL.
+    pub fn set_expiration_hook(env: &Env, hook: &ExpirationHook) {
+        let key = StorageKey::ExpirationHook(hook.subject.clone());
+        let ttl = get_ttl_lifetime(env);
+        env.storage().persistent().set(&key, hook);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Retrieve the [`ExpirationHook`] for `subject`, or `None` if not set.
+    pub fn get_expiration_hook(env: &Env, subject: &Address) -> Option<ExpirationHook> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ExpirationHook(subject.clone()))
+    }
+
+    /// Remove the [`ExpirationHook`] for `subject`.
+    pub fn remove_expiration_hook(env: &Env, subject: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::ExpirationHook(subject.clone()));
     }
 }

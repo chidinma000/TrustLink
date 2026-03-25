@@ -13,10 +13,26 @@ use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, Stri
 use crate::events::Events;
 use crate::storage::Storage;
 use crate::types::{
-    Attestation, AttestationStatus, ClaimTypeInfo, ContractMetadata, Error, FeeConfig,
-    IssuerMetadata, MultiSigProposal, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
+    Attestation, AttestationStatus, ClaimTypeInfo, ContractMetadata, Error, ExpirationHook,
+    FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
 };
 use crate::validation::Validation;
+
+// Seconds in one day.
+const SECS_PER_DAY: u64 = 86_400;
+
+/// Minimal interface expected on a registered callback contract.
+/// The callback receives the subject, attestation ID, and expiration timestamp.
+mod callback {
+    use soroban_sdk::{contractclient, Address, Env, String};
+
+    #[contractclient(name = "ExpirationCallbackClient")]
+    pub trait ExpirationCallback {
+        fn notify_expiring(env: Env, subject: Address, attestation_id: String, expiration: u64);
+    }
+}
+
+use callback::ExpirationCallbackClient;
 
 fn validate_metadata(metadata: &Option<String>) -> Result<(), Error> {
     if let Some(value) = metadata {
@@ -131,6 +147,32 @@ fn paginate_strings(env: &Env, values: Vec<String>, start: u32, limit: u32) -> V
     }
 
     result
+}
+
+/// Fire the expiration hook for `subject` if one is registered and the
+/// attestation is inside the notification window. Failures are silently
+/// swallowed so the main flow is never interrupted.
+fn maybe_trigger_expiration_hook(
+    env: &Env,
+    subject: &Address,
+    attestation_id: &String,
+    expiration: u64,
+    current_time: u64,
+) {
+    let hook = match Storage::get_expiration_hook(env, subject) {
+        Some(h) => h,
+        None => return,
+    };
+
+    let notify_window = (hook.notify_days_before as u64) * SECS_PER_DAY;
+    let notify_from = expiration.saturating_sub(notify_window);
+
+    if current_time >= notify_from && current_time < expiration {
+        Events::expiration_hook_triggered(env, subject, attestation_id, expiration);
+        // Best-effort cross-contract call — ignore any panic/error.
+        let client = ExpirationCallbackClient::new(env, &hook.callback_contract);
+        let _ = client.try_notify_expiring(subject, attestation_id, &expiration);
+    }
 }
 
 #[contract]
@@ -505,7 +547,20 @@ impl TrustLinkContract {
             if let Ok(attestation) = Storage::get_attestation(&env, &attestation_id) {
                 if attestation.claim_type == claim_type {
                     match attestation.get_status(current_time) {
-                        AttestationStatus::Valid => return true,
+                        AttestationStatus::Valid => {
+                            // Fire expiration hook if the attestation has an
+                            // expiration and is inside the notification window.
+                            if let Some(exp) = attestation.expiration {
+                                maybe_trigger_expiration_hook(
+                                    &env,
+                                    &subject,
+                                    &attestation_id,
+                                    exp,
+                                    current_time,
+                                );
+                            }
+                            return true;
+                        }
                         AttestationStatus::Expired => {
                             Events::attestation_expired(&env, &attestation_id, &subject);
                         }
@@ -921,6 +976,40 @@ impl TrustLinkContract {
     /// Retrieve a multi-sig proposal by ID.
     pub fn get_multisig_proposal(env: Env, proposal_id: String) -> Result<MultiSigProposal, Error> {
         Storage::get_multisig_proposal(&env, &proposal_id)
+    }
+
+    /// Register a callback contract to be notified when the subject's
+    /// attestations are within `days_before` days of expiring.
+    ///
+    /// Only the subject themselves can register or overwrite their hook.
+    pub fn register_expiration_hook(
+        env: Env,
+        subject: Address,
+        callback_contract: Address,
+        days_before: u32,
+    ) -> Result<(), Error> {
+        subject.require_auth();
+        let hook = ExpirationHook {
+            subject: subject.clone(),
+            callback_contract,
+            notify_days_before: days_before,
+        };
+        Storage::set_expiration_hook(&env, &hook);
+        Ok(())
+    }
+
+    /// Remove the expiration hook for `subject`.
+    ///
+    /// Only the subject themselves can remove their hook.
+    pub fn remove_expiration_hook(env: Env, subject: Address) -> Result<(), Error> {
+        subject.require_auth();
+        Storage::remove_expiration_hook(&env, &subject);
+        Ok(())
+    }
+
+    /// Retrieve the expiration hook registered for `subject`, if any.
+    pub fn get_expiration_hook(env: Env, subject: Address) -> Option<ExpirationHook> {
+        Storage::get_expiration_hook(&env, &subject)
     }
 
     pub fn get_version(env: Env) -> Result<String, Error> {        Storage::get_version(&env).ok_or(Error::NotInitialized)

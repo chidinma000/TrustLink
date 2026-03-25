@@ -70,6 +70,22 @@ pub enum AttestationStatus {
     Pending,
 }
 
+/// Registered callback for expiration notifications.
+///
+/// When a subject's attestation enters the notification window
+/// (`expiration - notify_days_before * 86400 <= current_time < expiration`),
+/// TrustLink calls `notify_expiring` on `callback_contract`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpirationHook {
+    /// The subject whose attestations are monitored.
+    pub subject: Address,
+    /// Contract to call when an attestation is near expiry.
+    pub callback_contract: Address,
+    /// How many days before expiration to trigger the notification.
+    pub notify_days_before: u32,
+}
+
 /// A multi-sig attestation proposal that becomes active once `threshold` issuers have co-signed.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
