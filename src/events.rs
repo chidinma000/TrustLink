@@ -1,6 +1,6 @@
 use soroban_sdk::{symbol_short, Address, Env, String};
 
-use crate::types::Attestation;
+use crate::types::{Attestation, IssuerTier};
 
 pub struct Events;
 
@@ -97,6 +97,14 @@ impl Events {
         env.events().publish(
             (symbol_short!("iss_reg"), issuer.clone()),
             (admin.clone(), timestamp),
+        );
+    }
+
+    /// Emitted when an issuer's tier is set or updated by the admin.
+    pub fn issuer_tier_updated(env: &Env, issuer: &Address, tier: &IssuerTier) {
+        env.events().publish(
+            (symbol_short!("iss_tier"), issuer.clone()),
+            tier.clone(),
         );
     }
 

@@ -70,6 +70,29 @@ pub enum AttestationStatus {
     Pending,
 }
 
+/// Trust tier assigned to a registered issuer.
+///
+/// Consumers can filter attestations by minimum tier using
+/// `has_valid_claim_from_tier`. Tiers are ordered: Bronze < Silver < Gold.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssuerTier {
+    Bronze,
+    Silver,
+    Gold,
+}
+
+impl IssuerTier {
+    /// Returns a numeric rank so tiers can be compared ordinally.
+    pub fn rank(&self) -> u32 {
+        match self {
+            IssuerTier::Bronze => 1,
+            IssuerTier::Silver => 2,
+            IssuerTier::Gold => 3,
+        }
+    }
+}
+
 /// Registered callback for expiration notifications.
 ///
 /// When a subject's attestation enters the notification window

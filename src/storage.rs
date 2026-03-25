@@ -27,7 +27,7 @@
 //!   used for pagination via `list_claim_types`.
 //! - `FeeConfig` — global attestation fee settings.
 
-use crate::types::{Attestation, ClaimTypeInfo, Error, ExpirationHook, FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig};
+use crate::types::{Attestation, ClaimTypeInfo, Error, ExpirationHook, FeeConfig, IssuerMetadata, IssuerTier, MultiSigProposal, TtlConfig};
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 /// Keys used to address data in contract storage.
@@ -61,6 +61,8 @@ pub enum StorageKey {
     MultiSigProposal(String),
     /// Expiration notification hook registered by a subject.
     ExpirationHook(Address),
+    /// Trust tier for a registered issuer.
+    IssuerTier(Address),
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -344,5 +346,20 @@ impl Storage {
         env.storage()
             .persistent()
             .remove(&StorageKey::ExpirationHook(subject.clone()));
+    }
+
+    /// Persist the [`IssuerTier`] for `issuer` and refresh its TTL.
+    pub fn set_issuer_tier(env: &Env, issuer: &Address, tier: &IssuerTier) {
+        let key = StorageKey::IssuerTier(issuer.clone());
+        let ttl = get_ttl_lifetime(env);
+        env.storage().persistent().set(&key, tier);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Retrieve the [`IssuerTier`] for `issuer`, or `None` if not set.
+    pub fn get_issuer_tier(env: &Env, issuer: &Address) -> Option<IssuerTier> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::IssuerTier(issuer.clone()))
     }
 }

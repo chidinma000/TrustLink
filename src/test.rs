@@ -37,7 +37,7 @@ fn setup(env: &Env) -> (Address, Address, TrustLinkContractClient<'_>) {
     let admin = Address::generate(env);
     let issuer = Address::generate(env);
     client.initialize(&admin, &None);
-    client.register_issuer(&admin, &issuer);
+    client.register_issuer(&admin, &issuer, &None);
     (admin, issuer, client)
 }
 
@@ -88,7 +88,7 @@ fn test_register_issuer_emits_event() {
     env.ledger().set_timestamp(timestamp);
 
     client.initialize(&admin);
-    client.register_issuer(&admin, &issuer);
+    client.register_issuer(&admin, &issuer, &None);
 
     let events = env.events().all();
     assert!(!events.is_empty());
@@ -750,9 +750,9 @@ fn setup_multisig(
     let issuer2 = Address::generate(env);
     let issuer3 = Address::generate(env);
     client.initialize(&admin, &None);
-    client.register_issuer(&admin, &issuer1);
-    client.register_issuer(&admin, &issuer2);
-    client.register_issuer(&admin, &issuer3);
+    client.register_issuer(&admin, &issuer1, &None);
+    client.register_issuer(&admin, &issuer2, &None);
+    client.register_issuer(&admin, &issuer3, &None);
     (issuer1, issuer2, issuer3, admin, client)
 }
 
@@ -818,7 +818,7 @@ fn test_multisig_non_required_signer_rejected() {
 
     let (issuer1, issuer2, issuer3, admin, client) = setup_multisig(&env);
     let outsider = Address::generate(&env);
-    client.register_issuer(&admin, &outsider);
+    client.register_issuer(&admin, &outsider, &None);
 
     let subject = Address::generate(&env);
     let claim_type = String::from_str(&env, "ACCREDITED_INVESTOR");
@@ -1176,4 +1176,161 @@ fn test_hook_overwrite_replaces_previous() {
     let hook = client.get_expiration_hook(&subject).unwrap();
     assert_eq!(hook.callback_contract, callback_id2);
     assert_eq!(hook.notify_days_before, 10);
+}
+
+// ── Issuer tier tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_register_issuer_defaults_to_bronze() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, client) = create_test_contract(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    client.initialize(&admin, &None);
+
+    // No tier supplied → defaults to Bronze.
+    client.register_issuer(&admin, &issuer, &None);
+    assert_eq!(client.get_issuer_tier(&issuer), Some(types::IssuerTier::Bronze));
+}
+
+#[test]
+fn test_register_issuer_with_explicit_tier() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, client) = create_test_contract(&env);
+    let admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    client.initialize(&admin, &None);
+
+    client.register_issuer(&admin, &issuer, &Some(types::IssuerTier::Gold));
+    assert_eq!(client.get_issuer_tier(&issuer), Some(types::IssuerTier::Gold));
+}
+
+#[test]
+fn test_admin_can_update_issuer_tier() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer, client) = setup(&env);
+
+    client.update_issuer_tier(&admin, &issuer, &types::IssuerTier::Silver);
+    assert_eq!(client.get_issuer_tier(&issuer), Some(types::IssuerTier::Silver));
+
+    client.update_issuer_tier(&admin, &issuer, &types::IssuerTier::Gold);
+    assert_eq!(client.get_issuer_tier(&issuer), Some(types::IssuerTier::Gold));
+}
+
+#[test]
+fn test_update_tier_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let not_admin = Address::generate(&env);
+
+    let result = client.try_update_issuer_tier(&not_admin, &issuer, &types::IssuerTier::Gold);
+    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+}
+
+#[test]
+fn test_update_tier_requires_registered_issuer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = setup(&env);
+    let unregistered = Address::generate(&env);
+
+    let result = client.try_update_issuer_tier(&admin, &unregistered, &types::IssuerTier::Gold);
+    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+}
+
+#[test]
+fn test_get_issuer_tier_returns_none_for_unknown() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, client) = setup(&env);
+    let unknown = Address::generate(&env);
+
+    assert_eq!(client.get_issuer_tier(&unknown), None);
+}
+
+#[test]
+fn test_has_valid_claim_from_tier_gold_issuer_satisfies_all_tiers() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    client.update_issuer_tier(&admin, &issuer, &types::IssuerTier::Gold);
+    client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+
+    // Gold satisfies Bronze, Silver, and Gold minimum.
+    assert!(client.has_valid_claim_from_tier(&subject, &claim_type, &types::IssuerTier::Bronze));
+    assert!(client.has_valid_claim_from_tier(&subject, &claim_type, &types::IssuerTier::Silver));
+    assert!(client.has_valid_claim_from_tier(&subject, &claim_type, &types::IssuerTier::Gold));
+}
+
+#[test]
+fn test_has_valid_claim_from_tier_bronze_issuer_fails_silver_and_gold() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env); // setup registers with Bronze by default
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+
+    assert!(client.has_valid_claim_from_tier(&subject, &claim_type, &types::IssuerTier::Bronze));
+    assert!(!client.has_valid_claim_from_tier(&subject, &claim_type, &types::IssuerTier::Silver));
+    assert!(!client.has_valid_claim_from_tier(&subject, &claim_type, &types::IssuerTier::Gold));
+}
+
+#[test]
+fn test_has_valid_claim_from_tier_picks_highest_tier_issuer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer_bronze, client) = setup(&env);
+    let issuer_gold = Address::generate(&env);
+    client.register_issuer(&admin, &issuer_gold, &Some(types::IssuerTier::Gold));
+
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    // Bronze issuer attests at t=0, Gold issuer attests at t=1.
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.create_attestation(&issuer_bronze, &subject, &claim_type, &None, &None, &None);
+    env.ledger().with_mut(|li| li.timestamp = 1);
+    client.create_attestation(&issuer_gold, &subject, &claim_type, &None, &None, &None);
+
+    // Gold min_tier satisfied because gold issuer has an attestation.
+    assert!(client.has_valid_claim_from_tier(&subject, &claim_type, &types::IssuerTier::Gold));
+}
+
+#[test]
+fn test_tier_update_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer, client) = setup(&env);
+    client.update_issuer_tier(&admin, &issuer, &types::IssuerTier::Silver);
+
+    let events = env.events().all();
+    let mut found = false;
+    for (_, topics, _) in events.iter() {
+        let topic0: soroban_sdk::Symbol =
+            soroban_sdk::TryFromVal::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        if topic0 == soroban_sdk::symbol_short!("iss_tier") {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "iss_tier event not found");
 }
