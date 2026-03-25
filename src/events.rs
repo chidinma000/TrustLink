@@ -1,6 +1,6 @@
 use soroban_sdk::{symbol_short, Address, Env, String};
 
-use crate::types::Attestation;
+use crate::types::{Attestation, IssuerTier};
 
 pub struct Events;
 
@@ -100,6 +100,14 @@ impl Events {
         );
     }
 
+    /// Emitted when an issuer's tier is set or updated by the admin.
+    pub fn issuer_tier_updated(env: &Env, issuer: &Address, tier: &IssuerTier) {
+        env.events().publish(
+            (symbol_short!("iss_tier"), issuer.clone()),
+            tier.clone(),
+        );
+    }
+
     pub fn issuer_removed(env: &Env, issuer: &Address, admin: &Address, timestamp: u64) {
         env.events().publish(
             (symbol_short!("iss_rem"), issuer.clone()),
@@ -142,11 +150,25 @@ impl Events {
         );
     }
 
+    /// Emitted when admin rights are transferred to a new address.
+    pub fn admin_transferred(env: &Env, old_admin: &Address, new_admin: &Address) {
+        env.events()
+            .publish((symbol_short!("adm_xfer"),), (old_admin.clone(), new_admin.clone()));
+    }
+
     /// Emitted when a multi-sig proposal reaches threshold and the attestation is activated.
     pub fn multisig_activated(env: &Env, proposal_id: &String, attestation_id: &String) {
         env.events().publish(
             (symbol_short!("ms_actv"),),
             (proposal_id.clone(), attestation_id.clone()),
+        );
+    }
+
+    /// Emitted when a new attestation template is created by an issuer.
+    pub fn template_created(env: &Env, issuer: &Address, template_id: &String) {
+        env.events().publish(
+            (symbol_short!("tmpl_crt"), issuer.clone()),
+            template_id.clone(),
         );
     }
 }
