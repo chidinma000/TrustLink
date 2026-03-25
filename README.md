@@ -71,8 +71,9 @@ src/
 ### Initialization
 
 ```rust
-// Deploy and initialize with admin
-contract.initialize(&admin_address);
+// Deploy and initialize with admin and optional custom TTL (days)
+// ttl_days: None uses default 30 days, or Some(7) for custom TTL
+contract.initialize(&admin_address, &None);
 ```
 
 ### Configure Attestation Fees
@@ -228,6 +229,13 @@ let has_kyc = contract.has_valid_claim(
 if has_kyc {
     // Proceed with financial operation
 }
+
+// Check if user has valid KYC from a specific issuer
+let has_specific_kyc = contract.has_valid_claim_from_issuer(
+    &user_address,
+    &String::from_str(&env, "KYC_PASSED"),
+    &specific_issuer_address
+);
 ```
 
 ### Verify Any of Multiple Claims

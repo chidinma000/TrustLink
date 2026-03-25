@@ -80,7 +80,7 @@ mod tests {
         let borrower = Address::generate(&env);
         let kyc_claim = String::from_str(&env, "KYC_PASSED");
 
-        trustlink.initialize(&admin);
+        trustlink.initialize(&admin, &None);
         trustlink.register_issuer(&admin, &issuer);
 
         let denied = lending.try_request_loan(&borrower, &trustlink_id, &1_000, &500);

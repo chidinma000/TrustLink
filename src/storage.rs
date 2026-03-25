@@ -27,7 +27,7 @@
 //!   used for pagination via `list_claim_types`.
 //! - `FeeConfig` — global attestation fee settings.
 
-use crate::types::{Attestation, ClaimTypeInfo, Error, FeeConfig, IssuerMetadata};
+use crate::types::{Attestation, ClaimTypeInfo, Error, FeeConfig, IssuerMetadata, TtlConfig};
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 /// Keys used to address data in contract storage.
@@ -39,6 +39,8 @@ pub enum StorageKey {
     Version,
     /// Global attestation fee settings.
     FeeConfig,
+    /// TTL configuration (days).
+    TtlConfig,
     /// Presence flag for a registered issuer.
     Issuer(Address),
     /// Presence flag for a registered bridge contract.
@@ -58,7 +60,21 @@ pub enum StorageKey {
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
-const INSTANCE_LIFETIME: u32 = DAY_IN_LEDGERS * 30; // 30 days
+const DEFAULT_TTL_DAYS: u32 = 30;
+const DEFAULT_INSTANCE_LIFETIME: u32 = DAY_IN_LEDGERS * DEFAULT_TTL_DAYS;
+
+/// Get the TTL in ledgers for the configured number of days.
+fn get_ttl_lifetime(env: &Env) -> u32 {
+    if let Some(config) = env
+        .storage()
+        .instance()
+        .get::<StorageKey, TtlConfig>(&StorageKey::TtlConfig)
+    {
+        DAY_IN_LEDGERS * config.ttl_days
+    } else {
+        DEFAULT_INSTANCE_LIFETIME
+    }
+}
 
 /// Low-level storage operations for TrustLink state.
 ///
@@ -74,10 +90,9 @@ impl Storage {
 
     /// Persist `admin` in instance storage and refresh the instance TTL.
     pub fn set_admin(env: &Env, admin: &Address) {
+        let ttl = get_ttl_lifetime(env);
         env.storage().instance().set(&StorageKey::Admin, admin);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage().instance().extend_ttl(ttl, ttl);
     }
 
     /// Persist `version` in instance storage alongside the admin.
@@ -87,12 +102,20 @@ impl Storage {
 
     /// Persist the attestation fee configuration.
     pub fn set_fee_config(env: &Env, fee_config: &FeeConfig) {
+        let ttl = get_ttl_lifetime(env);
         env.storage()
             .instance()
             .set(&StorageKey::FeeConfig, fee_config);
+        env.storage().instance().extend_ttl(ttl, ttl);
+    }
+
+    /// Persist the TTL configuration.
+    pub fn set_ttl_config(env: &Env, ttl_config: &TtlConfig) {
+        let ttl = get_ttl_lifetime(env);
         env.storage()
             .instance()
-            .extend_ttl(INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+            .set(&StorageKey::TtlConfig, ttl_config);
+        env.storage().instance().extend_ttl(ttl, ttl);
     }
 
     /// Retrieve the contract version string.
@@ -128,10 +151,9 @@ impl Storage {
     /// Add `issuer` to the registry and refresh its TTL.
     pub fn add_issuer(env: &Env, issuer: &Address) {
         let key = StorageKey::Issuer(issuer.clone());
+        let ttl = get_ttl_lifetime(env);
         env.storage().persistent().set(&key, &true);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 
     /// Return `true` if `address` is in the bridge registry.
@@ -144,10 +166,9 @@ impl Storage {
     /// Add `bridge` to the registry and refresh its TTL.
     pub fn add_bridge(env: &Env, bridge: &Address) {
         let key = StorageKey::Bridge(bridge.clone());
+        let ttl = get_ttl_lifetime(env);
         env.storage().persistent().set(&key, &true);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 
     /// Remove `issuer` from the registry.
@@ -167,10 +188,9 @@ impl Storage {
     /// Persist `attestation` and refresh its TTL.
     pub fn set_attestation(env: &Env, attestation: &Attestation) {
         let key = StorageKey::Attestation(attestation.id.clone());
+        let ttl = get_ttl_lifetime(env);
         env.storage().persistent().set(&key, attestation);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 
     /// Retrieve an attestation by `id`.
@@ -196,12 +216,11 @@ impl Storage {
     /// Append `attestation_id` to `subject`'s attestation index and refresh TTL.
     pub fn add_subject_attestation(env: &Env, subject: &Address, attestation_id: &String) {
         let key = StorageKey::SubjectAttestations(subject.clone());
+        let ttl = get_ttl_lifetime(env);
         let mut attestations = Self::get_subject_attestations(env, subject);
         attestations.push_back(attestation_id.clone());
         env.storage().persistent().set(&key, &attestations);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 
     /// Return the ordered list of attestation IDs created by `issuer`, or an
@@ -216,21 +235,19 @@ impl Storage {
     /// Append `attestation_id` to `issuer`'s attestation index and refresh TTL.
     pub fn add_issuer_attestation(env: &Env, issuer: &Address, attestation_id: &String) {
         let key = StorageKey::IssuerAttestations(issuer.clone());
+        let ttl = get_ttl_lifetime(env);
         let mut attestations = Self::get_issuer_attestations(env, issuer);
         attestations.push_back(attestation_id.clone());
         env.storage().persistent().set(&key, &attestations);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 
     /// Persist `metadata` for `issuer` and refresh its TTL.
     pub fn set_issuer_metadata(env: &Env, issuer: &Address, metadata: &IssuerMetadata) {
         let key = StorageKey::IssuerMetadata(issuer.clone());
+        let ttl = get_ttl_lifetime(env);
         env.storage().persistent().set(&key, metadata);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 
     /// Retrieve metadata for `issuer`, or `None` if not set.
@@ -245,10 +262,9 @@ impl Storage {
     pub fn set_claim_type(env: &Env, info: &ClaimTypeInfo) {
         let key = StorageKey::ClaimType(info.claim_type.clone());
         let is_new = !env.storage().persistent().has(&key);
+        let ttl = get_ttl_lifetime(env);
         env.storage().persistent().set(&key, info);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
         if is_new {
             let list_key = StorageKey::ClaimTypeList;
             let mut list: Vec<String> = env
@@ -258,9 +274,7 @@ impl Storage {
                 .unwrap_or(Vec::new(env));
             list.push_back(info.claim_type.clone());
             env.storage().persistent().set(&list_key, &list);
-            env.storage()
-                .persistent()
-                .extend_ttl(&list_key, INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+            env.storage().persistent().extend_ttl(&list_key, ttl, ttl);
         }
     }
 

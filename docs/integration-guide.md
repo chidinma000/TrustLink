@@ -77,6 +77,12 @@ impl LendingContract {
             return Err(Error::KYCRequired);
         }
 
+        // Alternatively, check for an attestation from a specific issuer
+        // let specific_issuer = Address::from_string(&String::from_str(&env, "GBXYZ..."));
+        // if !trustlink.has_valid_claim_from_issuer(&borrower, &claim, &specific_issuer) {
+        //     return Err(Error::KYCRequired);
+        // }
+
         // ... lending logic
         Ok(())
     }

@@ -14,7 +14,7 @@ use crate::events::Events;
 use crate::storage::Storage;
 use crate::types::{
     Attestation, AttestationStatus, ClaimTypeInfo, ContractMetadata, Error, FeeConfig,
-    IssuerMetadata,
+    IssuerMetadata, TtlConfig,
 };
 use crate::validation::Validation;
 
@@ -138,7 +138,7 @@ pub struct TrustLinkContract;
 
 #[contractimpl]
 impl TrustLinkContract {
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+    pub fn initialize(env: Env, admin: Address, ttl_days: Option<u32>) -> Result<(), Error> {
         if Storage::has_admin(&env) {
             return Err(Error::AlreadyInitialized);
         }
@@ -147,6 +147,14 @@ impl TrustLinkContract {
         Storage::set_admin(&env, &admin);
         Storage::set_version(&env, &String::from_str(&env, "1.0.0"));
         Storage::set_fee_config(&env, &default_fee_config(&admin));
+
+        // Set TTL configuration if provided
+        if let Some(days) = ttl_days {
+            Storage::set_ttl_config(&env, &TtlConfig { ttl_days: days });
+        } else {
+            Storage::set_ttl_config(&env, &TtlConfig { ttl_days: 30 });
+        }
+
         Events::admin_initialized(&env, &admin, env.ledger().timestamp());
         Ok(())
     }
@@ -496,6 +504,32 @@ impl TrustLinkContract {
         for attestation_id in attestation_ids.iter() {
             if let Ok(attestation) = Storage::get_attestation(&env, &attestation_id) {
                 if attestation.claim_type == claim_type {
+                    match attestation.get_status(current_time) {
+                        AttestationStatus::Valid => return true,
+                        AttestationStatus::Expired => {
+                            Events::attestation_expired(&env, &attestation_id, &subject);
+                        }
+                        AttestationStatus::Revoked | AttestationStatus::Pending => {}
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    pub fn has_valid_claim_from_issuer(
+        env: Env,
+        subject: Address,
+        claim_type: String,
+        issuer: Address,
+    ) -> bool {
+        let attestation_ids = Storage::get_subject_attestations(&env, &subject);
+        let current_time = env.ledger().timestamp();
+
+        for attestation_id in attestation_ids.iter() {
+            if let Ok(attestation) = Storage::get_attestation(&env, &attestation_id) {
+                if attestation.claim_type == claim_type && attestation.issuer == issuer {
                     match attestation.get_status(current_time) {
                         AttestationStatus::Valid => return true,
                         AttestationStatus::Expired => {
