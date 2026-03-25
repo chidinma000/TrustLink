@@ -190,11 +190,15 @@ impl Events {
         );
     }
 
-    /// Emitted when a subject requests GDPR deletion of their attestation.
-    pub fn deletion_requested(env: &Env, subject: &Address, attestation_id: &String, timestamp: u64) {
-        env.events().publish(
-            (symbol_short!("del_req"), subject.clone()),
-            (attestation_id.clone(), timestamp),
-        );
+    /// Emitted when the admin pauses the contract.
+    pub fn contract_paused(env: &Env, admin: &Address, timestamp: u64) {
+        env.events()
+            .publish((symbol_short!("paused"),), (admin.clone(), timestamp));
+    }
+
+    /// Emitted when the admin unpauses the contract.
+    pub fn contract_unpaused(env: &Env, admin: &Address, timestamp: u64) {
+        env.events()
+            .publish((symbol_short!("unpaused"),), (admin.clone(), timestamp));
     }
 }

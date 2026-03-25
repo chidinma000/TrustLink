@@ -72,6 +72,8 @@ pub enum StorageKey {
     ExpirationHook(Address),
     /// Append-only audit log for an attestation, keyed by attestation ID.
     AuditLog(String),
+    /// Global pause flag — when present and true, write operations are disabled.
+    Paused,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -493,6 +495,23 @@ impl Storage {
         log.push_back(entry.clone());
         env.storage().persistent().set(&key, &log);
         env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Return `true` if the contract is currently paused.
+    ///
+    /// Defaults to `false` (not paused) when the key is absent.
+    pub fn is_paused(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&StorageKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Set the contract pause state and refresh the instance TTL.
+    pub fn set_paused(env: &Env, paused: bool) {
+        let ttl = get_ttl_lifetime(env);
+        env.storage().instance().set(&StorageKey::Paused, &paused);
+        env.storage().instance().extend_ttl(ttl, ttl);
     }
 }
 
