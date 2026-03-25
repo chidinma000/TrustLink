@@ -37,7 +37,7 @@ fn setup(env: &Env) -> (Address, Address, TrustLinkContractClient<'_>) {
     let admin = Address::generate(env);
     let issuer = Address::generate(env);
     client.initialize(&admin, &None);
-    client.register_issuer(&admin, &issuer);
+    client.register_issuer(&admin, &issuer, &None);
     (admin, issuer, client)
 }
 
@@ -87,7 +87,7 @@ fn test_register_issuer_emits_event() {
     let timestamp = 1234567890u64;
     env.ledger().set_timestamp(timestamp);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &None);
     client.register_issuer(&admin, &issuer);
 
     let events = env.events().all();
@@ -262,6 +262,35 @@ fn test_create_attestation_rejects_without_fee_payment() {
     assert!(result.is_err());
     assert_eq!(token_client.balance(&collector), 0);
     assert_eq!(client.get_subject_attestations(&subject, &0, &10).len(), 0);
+}
+
+#[test]
+fn test_create_attestation_rejects_self_attestation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer, client) = setup(&env);
+    let collector = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let fee_token = register_test_token(&env, &admin);
+    let token_client = TokenClient::new(&env, &fee_token);
+    let asset_admin = StellarAssetClient::new(&env, &fee_token);
+
+    asset_admin.mint(&issuer, &100);
+    client.set_fee(&admin, &25, &collector, &Some(fee_token.clone()));
+
+    let result = client.try_create_attestation(
+        &issuer,
+        &issuer,
+        &claim_type,
+        &None,
+        &None,
+        &None,
+    );
+    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+    assert_eq!(token_client.balance(&issuer), 100);
+    assert_eq!(token_client.balance(&collector), 0);
+    assert_eq!(client.get_subject_attestations(&issuer, &0, &10).len(), 0);
 }
 
 #[test]
@@ -750,9 +779,9 @@ fn setup_multisig(
     let issuer2 = Address::generate(env);
     let issuer3 = Address::generate(env);
     client.initialize(&admin, &None);
-    client.register_issuer(&admin, &issuer1);
-    client.register_issuer(&admin, &issuer2);
-    client.register_issuer(&admin, &issuer3);
+    client.register_issuer(&admin, &issuer1, &None);
+    client.register_issuer(&admin, &issuer2, &None);
+    client.register_issuer(&admin, &issuer3, &None);
     (issuer1, issuer2, issuer3, admin, client)
 }
 
@@ -818,7 +847,7 @@ fn test_multisig_non_required_signer_rejected() {
 
     let (issuer1, issuer2, issuer3, admin, client) = setup_multisig(&env);
     let outsider = Address::generate(&env);
-    client.register_issuer(&admin, &outsider);
+    client.register_issuer(&admin, &outsider, &None);
 
     let subject = Address::generate(&env);
     let claim_type = String::from_str(&env, "ACCREDITED_INVESTOR");
@@ -977,4 +1006,160 @@ fn test_multisig_unregistered_proposer_rejected() {
     let result =
         client.try_propose_attestation(&unregistered, &subject, &claim_type, &required, &2);
     assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+}
+
+// ── Admin transfer tests ─────────────────────────────────────────────────────
+
+#[test]
+fn test_transfer_admin_success() {
+    // Property 2: Admin address updated after transfer — Validates: Requirements 1.3
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+    assert_eq!(client.get_admin(), new_admin);
+}
+
+#[test]
+fn test_transfer_admin_unauthorized() {
+    // Property 1: Non-admin cannot transfer — Validates: Requirements 2.1
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, client) = setup(&env);
+    let non_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let result = client.try_transfer_admin(&non_admin, &new_admin);
+    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+}
+
+#[test]
+fn test_transfer_admin_old_admin_loses_privileges() {
+    // Property 3: Privilege handoff — Validates: Requirements 3.1
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = setup(&env);
+    let new_admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+
+    let result = client.try_register_issuer(&admin, &issuer);
+    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+}
+
+#[test]
+fn test_transfer_admin_new_admin_can_register_issuer() {
+    // Property 3: Privilege handoff — Validates: Requirements 3.2
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = setup(&env);
+    let new_admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+    client.register_issuer(&new_admin, &issuer);
+    assert!(client.is_issuer(&issuer));
+}
+
+#[test]
+fn test_transfer_admin_emits_event() {
+    // Property 4: Event emission — Validates: Requirements 1.4, 4.1, 4.2
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+
+    let events = env.events().all();
+    let mut found = false;
+    for (_, topics, data) in events.iter() {
+        let topic0: soroban_sdk::Symbol =
+            soroban_sdk::TryFromVal::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        if topic0 == soroban_sdk::symbol_short!("adm_xfer") {
+            let event_data: (Address, Address) =
+                soroban_sdk::TryFromVal::try_from_val(&env, &data).unwrap();
+            assert_eq!(event_data.0, admin);
+            assert_eq!(event_data.1, new_admin);
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "adm_xfer event not found");
+}
+
+#[test]
+fn test_transfer_admin_not_initialized() {
+    // Edge Case: Uninitialized contract — Validates: Requirements 2.2
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, client) = create_test_contract(&env);
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let result = client.try_transfer_admin(&admin, &new_admin);
+    assert_eq!(result, Err(Ok(types::Error::NotInitialized)));
+}
+
+// ── Contract Config Query tests ──
+
+#[test]
+fn test_get_config_uninitialized_defaults() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, client) = create_test_contract(&env);
+
+    let config = client.get_config();
+
+    assert_eq!(config.ttl_config.ttl_days, 30);
+    assert_eq!(config.fee_config.attestation_fee, 0);
+    assert_eq!(config.fee_config.fee_token, None);
+    assert_eq!(config.contract_version, String::from_str(&env, ""));
+    assert_eq!(config.contract_name, String::from_str(&env, "TrustLink"));
+    assert_eq!(
+        config.contract_description,
+        String::from_str(&env, "On-chain attestation and verification system for the Stellar blockchain.")
+    );
+}
+
+#[test]
+fn test_get_config_post_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, _issuer, client) = setup(&env);
+
+    let config = client.get_config();
+
+    assert_eq!(config.ttl_config.ttl_days, 30);
+    assert_eq!(config.fee_config.attestation_fee, 0);
+    assert_eq!(config.contract_version, String::from_str(&env, "1.0.0"));
+    assert_eq!(config.contract_name, String::from_str(&env, "TrustLink"));
+}
+
+#[test]
+fn test_get_config_consistent_with_individual_queries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, _issuer, client) = setup(&env);
+
+    let config = client.get_config();
+    let fee_config = client.get_fee_config();
+    let metadata = client.get_contract_metadata();
+
+    assert_eq!(config.fee_config, fee_config);
+    assert_eq!(config.contract_name, metadata.name);
+    assert_eq!(config.contract_version, metadata.version);
+    assert_eq!(config.contract_description, metadata.description);
 }
