@@ -1,20 +1,16 @@
 import { PrismaClient } from "@prisma/client";
 import { createServer, IncomingMessage, ServerResponse } from "http";
 import Fastify from "fastify";
-import { ApolloServer } from "@apollo/server";
-import { ApolloServerPluginDrainHttpServer } from "@apollo/server/plugin/drainHttpServer";
+import { ApolloServer, HeaderMap } from "@apollo/server";
 import { makeExecutableSchema } from "@graphql-tools/schema";
 import { WebSocketServer } from "ws";
 import { useServer } from "graphql-ws/use/ws";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { HeaderMap } from "@apollo/server";
 import { startIndexer } from "./indexer";
 import { buildResolvers } from "./graphql";
 
 const db = new PrismaClient();
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -61,7 +57,32 @@ async function main() {
     resolvers: buildResolvers(db),
   });
 
-  // Raw HTTP server shared by Apollo (HTTP) and graphql-ws (WebSocket)
+  // 1. Create WS server (noServer — we handle the upgrade event manually)
+  const wsServer = new WebSocketServer({ noServer: true });
+
+  // 2. Wire graphql-ws onto the WS server
+  const wsCleanup = useServer({ schema }, wsServer);
+
+  // 3. Build and start Apollo (plugin references wsCleanup via closure — already assigned)
+  const apollo = new ApolloServer({
+    schema,
+    introspection: true, // enables Apollo Sandbox at /graphql in development
+    plugins: [
+      {
+        async serverWillStart() {
+          return {
+            async drainServer() {
+              await wsCleanup.dispose();
+            },
+          };
+        },
+      },
+    ],
+  });
+
+  await apollo.start();
+
+  // 4. HTTP server — handles both GraphQL POST/GET and WS upgrades on /graphql
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     if (req.url !== "/graphql") {
       res.writeHead(404);
@@ -90,7 +111,6 @@ async function main() {
     if (result.body.kind === "complete") {
       res.end(result.body.string);
     } else {
-      // chunked / multipart
       for await (const chunk of result.body.asyncIterator) {
         res.write(chunk);
       }
@@ -98,28 +118,14 @@ async function main() {
     }
   });
 
-  // WebSocket server for subscriptions — same port, same server
-  const wsServer = new WebSocketServer({ server: httpServer, path: "/graphql" });
-  const serverCleanup = useServer({ schema }, wsServer);
-
-  const apollo = new ApolloServer({
-    schema,
-    introspection: true, // enables Apollo Sandbox at /graphql in development
-    plugins: [
-      ApolloServerPluginDrainHttpServer({ httpServer }),
-      {
-        async serverWillStart() {
-          return {
-            async drainServer() {
-              await serverCleanup.dispose();
-            },
-          };
-        },
-      },
-    ],
+  // Upgrade HTTP → WebSocket for subscriptions
+  httpServer.on("upgrade", (req, socket, head) => {
+    if (req.url === "/graphql") {
+      wsServer.handleUpgrade(req, socket, head, (ws) => {
+        wsServer.emit("connection", ws, req);
+      });
+    }
   });
-
-  await apollo.start();
 
   const GQL_PORT = Number(process.env.GQL_PORT ?? 4000);
   httpServer.listen(GQL_PORT, "0.0.0.0", () => {
