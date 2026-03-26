@@ -1,14 +1,14 @@
-# TODO: Implement Attestation Transfer Feature (#25)
+# TODO: Implement Attestation Search by Claim Type (#24)
 
 ## Steps:
-- [x] 1. Add AuditAction::Transferred to src/types.rs
-- [x] 2. Add attestation_transferred event to src/events.rs
-- [x] 3. Add remove_issuer_attestation helper to src/storage.rs
-- [x] 4. Implement transfer_attestation function in src/lib.rs
-- [x] 5. Add unit tests to src/test.rs
-- [x] 6. Update README.md with documentation
-- [ ] 7. Run cargo test
-- [ ] 8. Create branch, commit, create PR
+- [ ] 1. Add StorageKey::ClaimTypeAttestations(String) in src/storage.rs
+- [ ] 2. Add get_claim_type_attestations, add_claim_type_attestation in src/storage.rs
+- [ ] 3. Update store_attestation in src/lib.rs to index claim_type
+- [ ] 4. Add get_subjects_by_claim_type in src/lib.rs impl
+- [ ] 5. Add unit tests in src/test.rs
+- [ ] 6. Update README.md
+- [ ] 7. cargo test
+- [ ] 8. git commit, gh pr create
 
-Current: Starting step 1.
+Current: Step 1.
 
