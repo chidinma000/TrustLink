@@ -15,8 +15,8 @@ use crate::events::Events;
 use crate::storage::Storage;
 use crate::types::{
     Attestation, AttestationStatus, AuditAction, AuditEntry, ClaimTypeInfo, ContractConfig,
-    ContractMetadata, Endorsement, Error, FeeConfig, GlobalStats, IssuerMetadata, IssuerStats,
-    IssuerTier, MultiSigProposal, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
+    ContractMetadata, Endorsement, Error, FeeConfig, GlobalStats, HealthStatus, IssuerMetadata,
+    IssuerStats, IssuerTier, MultiSigProposal, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
 };
 use crate::validation::Validation;
 
@@ -1319,6 +1319,21 @@ impl TrustLinkContract {
     /// No authentication required — safe to call from dashboards and analytics tools.
     pub fn get_global_stats(env: Env) -> GlobalStats {
         Storage::get_global_stats(&env)
+    }
+
+    /// Lightweight health probe for monitoring dashboards and uptime checks.
+    ///
+    /// No authentication required. Returns `initialized: false` before
+    /// `initialize` has been called.
+    pub fn health_check(env: Env) -> HealthStatus {
+        let initialized = Storage::has_admin(&env);
+        let stats = Storage::get_global_stats(&env);
+        HealthStatus {
+            initialized,
+            admin_set: initialized,
+            issuer_count: stats.total_issuers,
+            total_attestations: stats.total_attestations,
+        }
     }
 
     pub fn get_contract_metadata(env: Env) -> Result<ContractMetadata, Error> {

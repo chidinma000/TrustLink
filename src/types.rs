@@ -98,6 +98,18 @@ pub struct GlobalStats {
     pub total_issuers: u64,
 }
 
+/// Lightweight health status returned by `health_check`.
+///
+/// No authentication required — designed for monitoring dashboards and uptime probes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthStatus {
+    pub initialized: bool,
+    pub admin_set: bool,
+    pub issuer_count: u64,
+    pub total_attestations: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {

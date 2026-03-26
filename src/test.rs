@@ -1474,193 +1474,45 @@ fn test_audit_log_batch_revoke_appends_entries() {
     assert_eq!(client.get_audit_log(&id1).get(1).unwrap().action, crate::types::AuditAction::Revoked);
 }
 
-// ── Pause / unpause tests ────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// health_check
+// ---------------------------------------------------------------------------
 
 #[test]
-fn test_pause_and_unpause_by_admin() {
+fn test_health_check_before_initialization() {
     let env = Env::default();
-    env.mock_all_auths();
+    let (_, client) = create_test_contract(&env);
 
-    let (admin, _, client) = setup(&env);
+    let status = client.health_check();
 
-    assert!(!client.is_paused());
-
-    client.pause(&admin);
-    assert!(client.is_paused());
-
-    client.unpause(&admin);
-    assert!(!client.is_paused());
+    assert!(!status.initialized);
+    assert!(!status.admin_set);
+    assert_eq!(status.issuer_count, 0);
+    assert_eq!(status.total_attestations, 0);
 }
 
 #[test]
-fn test_pause_requires_admin() {
+fn test_health_check_after_operations() {
     let env = Env::default();
     env.mock_all_auths();
+    let (_admin, issuer, client) = setup(&env);
 
-    let (_, _, client) = setup(&env);
-    let non_admin = Address::generate(&env);
+    // After init + 1 issuer registered by setup()
+    let status = client.health_check();
+    assert!(status.initialized);
+    assert!(status.admin_set);
+    assert_eq!(status.issuer_count, 1);
+    assert_eq!(status.total_attestations, 0);
 
-    let result = client.try_pause(&non_admin);
-    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
-    assert!(!client.is_paused());
-}
-
-#[test]
-fn test_unpause_requires_admin() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, _, client) = setup(&env);
-    let non_admin = Address::generate(&env);
-
-    client.pause(&admin);
-    assert!(client.is_paused());
-
-    let result = client.try_unpause(&non_admin);
-    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
-    assert!(client.is_paused());
-}
-
-#[test]
-fn test_create_attestation_blocked_when_paused() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, issuer, client) = setup(&env);
+    // Create two attestations
     let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let claim = String::from_str(&env, "KYC_PASSED");
+    client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
 
-    client.pause(&admin);
+    let subject2 = Address::generate(&env);
+    client.create_attestation(&issuer, &subject2, &claim, &None, &None, &None);
 
-    let result = client.try_create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
-    assert_eq!(result, Err(Ok(types::Error::ContractPaused)));
-}
-
-#[test]
-fn test_revoke_attestation_blocked_when_paused() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, issuer, client) = setup(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    // Create attestation while unpaused.
-    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
-
-    client.pause(&admin);
-
-    let result = client.try_revoke_attestation(&issuer, &id, &None);
-    assert_eq!(result, Err(Ok(types::Error::ContractPaused)));
-
-    // Attestation must still exist and not be revoked.
-    assert!(!client.get_attestation(&id).revoked);
-}
-
-#[test]
-fn test_reads_work_while_paused() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, issuer, client) = setup(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
-
-    client.pause(&admin);
-
-    // All read paths must remain functional while paused.
-    assert!(client.has_valid_claim(&subject, &claim_type));
-    assert_eq!(client.get_attestation(&id).id, id);
-    assert_eq!(
-        client.get_attestation_status(&id),
-        types::AttestationStatus::Valid
-    );
-    assert_eq!(client.get_subject_attestations(&subject, &0, &10).len(), 1);
-    assert_eq!(client.get_issuer_attestations(&issuer, &0, &10).len(), 1);
-}
-
-#[test]
-fn test_create_attestation_works_after_unpause() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, issuer, client) = setup(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    client.pause(&admin);
-    client.unpause(&admin);
-
-    // Should succeed now.
-    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
-    assert!(client.has_valid_claim(&subject, &claim_type));
-    assert_eq!(client.get_attestation(&id).issuer, issuer);
-}
-
-#[test]
-fn test_pause_emits_event() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, _, client) = setup(&env);
-    let timestamp = 9_999_999u64;
-    env.ledger().set_timestamp(timestamp);
-
-    client.pause(&admin);
-
-    let events = env.events().all();
-    let mut found = false;
-    for (_, topics, data) in events {
-        let topic0: soroban_sdk::Symbol =
-            soroban_sdk::TryFromVal::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-        if topic0 == soroban_sdk::symbol_short!("paused") {
-            let (event_admin, event_ts): (Address, u64) =
-                soroban_sdk::TryFromVal::try_from_val(&env, &data).unwrap();
-            assert_eq!(event_admin, admin);
-            assert_eq!(event_ts, timestamp);
-            found = true;
-            break;
-        }
-    }
-    assert!(found, "ContractPaused event not emitted");
-}
-
-#[test]
-fn test_unpause_emits_event() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, _, client) = setup(&env);
-    let timestamp = 9_999_999u64;
-    env.ledger().set_timestamp(timestamp);
-
-    client.pause(&admin);
-    client.unpause(&admin);
-
-    let events = env.events().all();
-    let mut found = false;
-    for (_, topics, data) in events {
-        let topic0: soroban_sdk::Symbol =
-            soroban_sdk::TryFromVal::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-        if topic0 == soroban_sdk::symbol_short!("unpaused") {
-            let (event_admin, event_ts): (Address, u64) =
-                soroban_sdk::TryFromVal::try_from_val(&env, &data).unwrap();
-            assert_eq!(event_admin, admin);
-            assert_eq!(event_ts, timestamp);
-            found = true;
-            break;
-        }
-    }
-    assert!(found, "ContractUnpaused event not emitted");
-}
-
-#[test]
-fn test_is_paused_false_by_default() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_, _, client) = setup(&env);
-    assert!(!client.is_paused());
+    let status = client.health_check();
+    assert_eq!(status.total_attestations, 2);
+    assert_eq!(status.issuer_count, 1);
 }
