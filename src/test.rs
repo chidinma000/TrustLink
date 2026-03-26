@@ -287,6 +287,59 @@ fn test_create_attestation_rejects_self_attestation() {
 }
 
 #[test]
+fn test_create_attestation_rejects_past_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+    let now = env.ledger().timestamp();
+    let past_expiration = Some(now - 1);
+
+    let result = client.try_create_attestation(
+        &issuer,
+        &subject,
+        &claim_type,
+        &past_expiration,
+        &None,
+        &None,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidExpiration)));
+}
+
+#[test]
+fn test_create_attestation_accepts_future_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+    let future_expiration = Some(env.ledger().timestamp() + 1);
+
+    let id = client.create_attestation(
+        &issuer,
+        &subject,
+        &claim_type,
+        &future_expiration,
+        &None,
+        &None,
+    );
+
+    let attestation = client.get_attestation(&id);
+    assert_eq!(attestation.expiration, future_expiration);
+    assert!(client.has_valid_claim(&subject, &claim_type));
+}
+
+#[test]
 fn test_create_attestation_rejects_metadata_over_256_chars() {
     let env = Env::default();
     env.mock_all_auths();
