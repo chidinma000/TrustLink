@@ -1,42 +1,57 @@
-//! Shared data types, error codes, and core attestation logic for TrustLink.
+//! Shared data types for TrustLink.
 //!
-//! ## Types
-//!
-//! - [`Attestation`] — the primary on-chain record. Stores the issuer, subject,
-//!   claim type, creation timestamp, optional expiration, optional `valid_from`,
-//!   and revocation flag. Its [`Attestation::generate_id`] method produces a
-//!   deterministic 32-character hex ID from a SHA-256 hash of the key fields,
-//!   and [`Attestation::get_status`] computes the current [`AttestationStatus`]
-//!   from the ledger timestamp.
-//! - [`AttestationStatus`] — four-variant enum: `Pending`, `Valid`, `Expired`,
-//!   `Revoked`. Priority order: Pending > Revoked > Expired > Valid.
-//! - [`IssuerMetadata`] — optional public profile an issuer can attach to their
-//!   address (name, URL, description).
-//! - [`ClaimTypeInfo`] — a registered claim type identifier paired with a
-//!   human-readable description.
-//! - [`ContractMetadata`] — static contract info (name, version, description)
-//!   returned by `get_contract_metadata`.
-//!
-//! ## Error codes
-//!
-//! [`Error`] is a `#[contracterror]` enum whose `u32` discriminants are the
-//! values surfaced to callers as `Error(Contract, #N)`:
-//!
-//! | # | Variant                | When raised                                      |
-//! |---|------------------------|--------------------------------------------------|
-//! | 1 | `AlreadyInitialized`   | `initialize` called a second time                |
-//! | 2 | `NotInitialized`       | Any call before `initialize`                     |
-//! | 3 | `Unauthorized`         | Caller is not admin or not a registered issuer   |
-//! | 4 | `NotFound`             | Attestation ID does not exist in storage         |
-//! | 5 | `DuplicateAttestation` | ID collision (same inputs at same timestamp)     |
-//! | 6 | `AlreadyRevoked`       | Attempt to revoke or renew an already-revoked attestation |
-//! | 7 | `Expired`              | Reserved                                         |
-//! | 8 | `InvalidValidFrom`     | `valid_from` ≤ current ledger timestamp          |
-//! | 9 | `InvalidExpiration`    | New expiration ≤ current ledger timestamp        |
+//! Defines [`Attestation`], [`AttestationStatus`], and supporting structs used
+//! throughout the contract. All types are annotated with `#[contracttype]` for
+//! Soroban ABI compatibility. Error definitions live in [`crate::errors`].
 
-use soroban_sdk::{contracterror, contracttype, Address, Env, String};
+use soroban_sdk::{contracttype, xdr::ToXdr, Address, Bytes, Env, String, Vec};
 
-/// Contract metadata returned by `get_contract_metadata`.
+pub use crate::errors::Error;
+
+/// Default lifetime for a multi-sig proposal: 7 days in seconds.
+pub const MULTISIG_PROPOSAL_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Trust tier assigned to a registered issuer.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum IssuerTier {
+    Basic = 0,
+    Verified = 1,
+    Premium = 2,
+}
+
+impl IssuerTier {
+    pub fn rank(self) -> u32 {
+        self as u32
+    }
+}
+
+/// Per-issuer statistics.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerStats {
+    pub total_issued: u64,
+}
+
+/// A registered expiration notification hook for a subject.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpirationHook {
+    pub callback_contract: Address,
+    pub notify_days_before: u32,
+}
+
+/// Full contract configuration snapshot returned by `get_config`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractConfig {
+    pub ttl_config: TtlConfig,
+    pub fee_config: FeeConfig,
+    pub contract_name: String,
+    pub contract_version: String,
+    pub contract_description: String,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractMetadata {
@@ -45,7 +60,6 @@ pub struct ContractMetadata {
     pub description: String,
 }
 
-/// A registered claim type with its description.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClaimTypeInfo {
@@ -53,7 +67,49 @@ pub struct ClaimTypeInfo {
     pub description: String,
 }
 
-/// A single attestation record stored on-chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerMetadata {
+    pub name: String,
+    pub url: String,
+    pub description: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeConfig {
+    pub attestation_fee: i128,
+    pub fee_collector: Address,
+    pub fee_token: Option<Address>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TtlConfig {
+    pub ttl_days: u32,
+}
+
+/// Global contract statistics for dashboards and analytics.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalStats {
+    pub total_attestations: u64,
+    pub total_revocations: u64,
+    pub total_issuers: u64,
+}
+
+/// Lightweight health status returned by `health_check`.
+///
+/// No authentication required — designed for monitoring dashboards and uptime probes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthStatus {
+    pub initialized: bool,
+    pub admin_set: bool,
+    pub issuer_count: u64,
+    pub total_attestations: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
@@ -64,19 +120,19 @@ pub struct Attestation {
     pub timestamp: u64,
     pub expiration: Option<u64>,
     pub revoked: bool,
+    pub metadata: Option<String>,
     pub valid_from: Option<u64>,
+    pub imported: bool,
+    pub bridged: bool,
+    pub source_chain: Option<String>,
+    pub source_tx: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub revocation_reason: Option<String>,
+    /// True when the subject has requested GDPR deletion of this attestation.
+    /// Deleted attestations are excluded from all query results.
+    pub deleted: bool,
 }
 
-/// Metadata an issuer can associate with their address.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IssuerMetadata {
-    pub name: String,
-    pub url: String,
-    pub description: String,
-}
-
-/// The current validity state of an attestation.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttestationStatus {
@@ -115,9 +171,24 @@ pub struct StorageLimits {
 }
 
 impl Attestation {
-    /// Generate a deterministic attestation ID by SHA-256 hashing
-    /// `(issuer, subject, claim_type, timestamp)` and hex-encoding the first
-    /// 16 bytes of the digest into a 32-character ASCII string.
+    /// Hashes an arbitrary byte payload and returns a 32-character lowercase hex string.
+    ///
+    /// Algorithm: SHA-256 over the XDR-encoded payload, digest truncated to the first 16 bytes,
+    /// hex-encoded to a 32-character lowercase string.
+    pub fn hash_payload(env: &Env, payload: &Bytes) -> String {
+        let hash = env.crypto().sha256(payload).to_array();
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut hex = [0u8; 64];
+        for i in 0..32 {
+            hex[i * 2] = HEX[(hash[i] >> 4) as usize];
+            hex[i * 2 + 1] = HEX[(hash[i] & 0x0f) as usize];
+        }
+        String::from_bytes(env, &hex)
+    }
+
+    /// Generates a deterministic attestation ID from the given inputs.
+    ///
+    /// XDR field order: `issuer | subject | claim_type | timestamp`
     pub fn generate_id(
         env: &Env,
         issuer: &Address,
@@ -125,51 +196,68 @@ impl Attestation {
         claim_type: &String,
         timestamp: u64,
     ) -> String {
-        use soroban_sdk::Bytes;
-        let mut issuer_buf = [0u8; 56];
-        let mut subject_buf = [0u8; 56];
-        issuer.to_string().copy_into_slice(&mut issuer_buf);
-        subject.to_string().copy_into_slice(&mut subject_buf);
-
-        let claim_len = claim_type.len() as usize;
-        let mut claim_buf = [0u8; 128];
-        claim_type.copy_into_slice(&mut claim_buf[..claim_len]);
-
-        let mut buf = Bytes::new(env);
-        buf.append(&Bytes::from_slice(env, &issuer_buf));
-        buf.append(&Bytes::from_slice(env, &subject_buf));
-        buf.append(&Bytes::from_slice(env, &claim_buf[..claim_len]));
-        buf.append(&Bytes::from_slice(env, &timestamp.to_be_bytes()));
-
-        let hash = env.crypto().sha256(&buf);
-        let hash_arr = hash.to_array();
-
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut hex_bytes = [0u8; 32];
-        for i in 0..16 {
-            hex_bytes[i * 2]     = HEX[(hash_arr[i] >> 4) as usize];
-            hex_bytes[i * 2 + 1] = HEX[(hash_arr[i] & 0x0f) as usize];
-        }
-        String::from_str(env, core::str::from_utf8(&hex_bytes).unwrap_or(""))
+        let mut payload = Bytes::new(env);
+        payload.append(&issuer.clone().to_xdr(env));
+        payload.append(&subject.clone().to_xdr(env));
+        payload.append(&claim_type.clone().to_xdr(env));
+        payload.append(&timestamp.to_xdr(env));
+        Self::hash_payload(env, &payload)
     }
 
-    /// Compute the current [`AttestationStatus`] given `current_time`.
+    /// Generates a deterministic bridge attestation ID from the given inputs.
     ///
-    /// Priority: Pending > Revoked > Expired > Valid.
+    /// XDR field order: `bridge | subject | claim_type | source_chain | source_tx | timestamp`
+    pub fn generate_bridge_id(
+        env: &Env,
+        bridge: &Address,
+        subject: &Address,
+        claim_type: &String,
+        source_chain: &String,
+        source_tx: &String,
+        timestamp: u64,
+    ) -> String {
+        let mut payload = Bytes::new(env);
+        payload.append(&bridge.clone().to_xdr(env));
+        payload.append(&subject.clone().to_xdr(env));
+        payload.append(&claim_type.clone().to_xdr(env));
+        payload.append(&source_chain.clone().to_xdr(env));
+        payload.append(&source_tx.clone().to_xdr(env));
+        payload.append(&timestamp.to_xdr(env));
+        Self::hash_payload(env, &payload)
+    }
+
     pub fn get_status(&self, current_time: u64) -> AttestationStatus {
-        if let Some(vf) = self.valid_from {
-            if current_time < vf {
+        if let Some(valid_from) = self.valid_from {
+            if current_time < valid_from {
                 return AttestationStatus::Pending;
             }
         }
         if self.revoked {
             return AttestationStatus::Revoked;
         }
-        if let Some(exp) = self.expiration {
-            if current_time >= exp {
+        if let Some(expiration) = self.expiration {
+            if current_time >= expiration {
                 return AttestationStatus::Expired;
             }
         }
         AttestationStatus::Valid
+    }
+}
+
+impl MultiSigProposal {
+    pub fn generate_id(
+        env: &Env,
+        proposer: &Address,
+        subject: &Address,
+        claim_type: &String,
+        timestamp: u64,
+    ) -> String {
+        let mut payload = Bytes::new(env);
+        payload.append(&Bytes::from_slice(env, b"multisig:"));
+        payload.append(&proposer.clone().to_xdr(env));
+        payload.append(&subject.clone().to_xdr(env));
+        payload.append(&claim_type.clone().to_xdr(env));
+        payload.append(&timestamp.to_xdr(env));
+        Attestation::hash_payload(env, &payload)
     }
 }
