@@ -41,6 +41,10 @@ pub enum Error {
     AlreadyEndorsed = 23,
     /// The contract is paused; write operations are temporarily disabled.
     ContractPaused = 24,
-    /// The jurisdiction code provided is not a valid ISO 3166-1 alpha-2 value.
-    InvalidJurisdiction = 25,
+    /// An attestation request has already been fulfilled or rejected.
+    RequestAlreadyProcessed = 25,
+    /// The attestation request has expired without being acted on.
+    RequestExpired = 26,
+    /// A duplicate request already exists for this subject/issuer/claim_type combination.
+    DuplicateRequest = 27,
 }

@@ -29,9 +29,8 @@
 //! - `GlobalStats` — running counters for total attestations, revocations, and issuers.
 
 use crate::types::{
-    Attestation, AuditEntry, ClaimTypeInfo, Endorsement, Error, ExpirationHook, FeeConfig,
-    GlobalStats, IssuerMetadata, IssuerStats, IssuerTier, MultiSigProposal, RateLimitConfig,
-    TtlConfig,
+    Attestation, AttestationRequest, AuditEntry, ClaimTypeInfo, Endorsement, Error, ExpirationHook,
+    FeeConfig, GlobalStats, IssuerMetadata, IssuerStats, IssuerTier, MultiSigProposal, TtlConfig,
 };
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 use crate::types::{Attestation, ClaimTypeInfo, Error, IssuerMetadata, StorageLimits};
@@ -81,10 +80,10 @@ pub enum StorageKey {
     AuditLog(String),
     /// Global pause flag — when present and true, write operations are disabled.
     Paused,
-    /// Rate limit configuration (min_issuance_interval in seconds).
-    RateLimitConfig,
-    /// Last issuance timestamp for an issuer, keyed by issuer address.
-    LastIssuanceTime(Address),
+    /// An attestation request submitted by a subject, keyed by request ID.
+    AttestationRequest(String),
+    /// Ordered list of pending request IDs for an issuer address.
+    IssuerRequests(Address),
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -381,5 +380,245 @@ impl Storage {
                 max_attestations_per_issuer: 10_000,
                 max_attestations_per_subject: 100,
             })
+    }
+
+    /// Persist updated global stats to instance storage and refresh TTL.
+    fn set_global_stats(env: &Env, stats: &GlobalStats) {
+        let ttl = get_ttl_lifetime(env);
+        env.storage()
+            .instance()
+            .set(&StorageKey::GlobalStats, stats);
+        env.storage().instance().extend_ttl(ttl, ttl);
+    }
+
+    /// Increment `total_attestations` by `count`.
+    pub fn increment_total_attestations(env: &Env, count: u64) {
+        let mut stats = Self::get_global_stats(env);
+        stats.total_attestations += count;
+        Self::set_global_stats(env, &stats);
+    }
+
+    /// Increment `total_revocations` by `count`.
+    pub fn increment_total_revocations(env: &Env, count: u64) {
+        let mut stats = Self::get_global_stats(env);
+        stats.total_revocations += count;
+        Self::set_global_stats(env, &stats);
+    }
+
+    /// Increment `total_issuers` by 1 when a new issuer is registered.
+    pub fn increment_total_issuers(env: &Env) {
+        let mut stats = Self::get_global_stats(env);
+        stats.total_issuers += 1;
+        Self::set_global_stats(env, &stats);
+    }
+
+    /// Decrement `total_issuers` by 1 when an issuer is removed (saturating at 0).
+    pub fn decrement_total_issuers(env: &Env) {
+        let mut stats = Self::get_global_stats(env);
+        stats.total_issuers = stats.total_issuers.saturating_sub(1);
+        Self::set_global_stats(env, &stats);
+    }
+
+    /// Persist the trust tier for `issuer`.
+    pub fn set_issuer_tier(env: &Env, issuer: &Address, tier: &IssuerTier) {
+        let key = StorageKey::IssuerTier(issuer.clone());
+        let ttl = get_ttl_lifetime(env);
+        env.storage().persistent().set(&key, tier);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Retrieve the trust tier for `issuer`, or `None` if not set.
+    pub fn get_issuer_tier(env: &Env, issuer: &Address) -> Option<IssuerTier> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::IssuerTier(issuer.clone()))
+    }
+
+    /// Retrieve per-issuer stats, returning zeroed defaults if not yet set.
+    pub fn get_issuer_stats(env: &Env, issuer: &Address) -> IssuerStats {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::IssuerStats(issuer.clone()))
+            .unwrap_or(IssuerStats { total_issued: 0 })
+    }
+
+    /// Persist per-issuer stats.
+    pub fn set_issuer_stats(env: &Env, issuer: &Address, stats: &IssuerStats) {
+        let key = StorageKey::IssuerStats(issuer.clone());
+        let ttl = get_ttl_lifetime(env);
+        env.storage().persistent().set(&key, stats);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Retrieve the expiration hook for `subject`, or `None` if not registered.
+    pub fn get_expiration_hook(env: &Env, subject: &Address) -> Option<ExpirationHook> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ExpirationHook(subject.clone()))
+    }
+
+    /// Persist an expiration hook for `subject`.
+    #[allow(dead_code)]
+    pub fn set_expiration_hook(env: &Env, subject: &Address, hook: &ExpirationHook) {
+        let key = StorageKey::ExpirationHook(subject.clone());
+        let ttl = get_ttl_lifetime(env);
+        env.storage().persistent().set(&key, hook);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Return the audit log for `attestation_id`, or an empty [`Vec`] if none exist.
+    pub fn get_audit_log(env: &Env, attestation_id: &String) -> Vec<AuditEntry> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::AuditLog(attestation_id.clone()))
+            .unwrap_or(Vec::new(env))
+    }
+
+    /// Append `entry` to the audit log for `attestation_id` (append-only).
+    pub fn append_audit_entry(env: &Env, attestation_id: &String, entry: &AuditEntry) {
+        let key = StorageKey::AuditLog(attestation_id.clone());
+        let ttl = get_ttl_lifetime(env);
+        let mut log = Self::get_audit_log(env, attestation_id);
+        log.push_back(entry.clone());
+        env.storage().persistent().set(&key, &log);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Return `true` if the contract is currently paused.
+    ///
+    /// Defaults to `false` (not paused) when the key is absent.
+    pub fn is_paused(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&StorageKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Set the contract pause state and refresh the instance TTL.
+    pub fn set_paused(env: &Env, paused: bool) {
+        let ttl = get_ttl_lifetime(env);
+        env.storage().instance().set(&StorageKey::Paused, &paused);
+        env.storage().instance().extend_ttl(ttl, ttl);
+    }
+
+    /// Persist an attestation request and refresh its TTL.
+    pub fn set_attestation_request(env: &Env, request: &AttestationRequest) {
+        let key = StorageKey::AttestationRequest(request.id.clone());
+        let ttl = get_ttl_lifetime(env);
+        env.storage().persistent().set(&key, request);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Retrieve an attestation request by ID.
+    ///
+    /// # Errors
+    /// - [`Error::NotFound`] — no request with that ID exists.
+    pub fn get_attestation_request(env: &Env, id: &String) -> Result<AttestationRequest, Error> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::AttestationRequest(id.clone()))
+            .ok_or(Error::NotFound)
+    }
+
+    /// Return the ordered list of request IDs for `issuer`, or an empty [`Vec`] if none.
+    pub fn get_issuer_requests(env: &Env, issuer: &Address) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::IssuerRequests(issuer.clone()))
+            .unwrap_or(Vec::new(env))
+    }
+
+    /// Append `request_id` to `issuer`'s request index and refresh TTL.
+    pub fn add_issuer_request(env: &Env, issuer: &Address, request_id: &String) {
+        let key = StorageKey::IssuerRequests(issuer.clone());
+        let ttl = get_ttl_lifetime(env);
+        let mut requests = Self::get_issuer_requests(env, issuer);
+        requests.push_back(request_id.clone());
+        env.storage().persistent().set(&key, &requests);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+}
+
+/// Return a paginated window of `values` starting at index `start` for up to
+/// `limit` items. Returns an empty vec if `start >= values.len()`.
+pub(crate) fn paginate(env: &Env, values: Vec<String>, start: u32, limit: u32) -> Vec<String> {
+    let total = values.len();
+    if start >= total {
+        return Vec::new(env);
+    }
+    let end = (start + limit).min(total);
+    let mut result = Vec::new(env);
+    for index in start..end {
+        if let Some(value) = values.get(index) {
+            result.push_back(value);
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::Env;
+
+    fn make_vec(env: &Env, items: &[&str]) -> Vec<String> {
+        let mut v = Vec::new(env);
+        for s in items {
+            v.push_back(String::from_str(env, s));
+        }
+        v
+    }
+
+    #[test]
+    fn paginate_normal_slice() {
+        let env = Env::default();
+        let input = make_vec(&env, &["a", "b", "c", "d", "e"]);
+        let result = paginate(&env, input, 1, 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.get(0).unwrap(), String::from_str(&env, "b"));
+        assert_eq!(result.get(1).unwrap(), String::from_str(&env, "c"));
+        assert_eq!(result.get(2).unwrap(), String::from_str(&env, "d"));
+    }
+
+    #[test]
+    fn paginate_empty_input() {
+        let env = Env::default();
+        let input: Vec<String> = Vec::new(&env);
+        let result = paginate(&env, input, 0, 5);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn paginate_start_beyond_length() {
+        let env = Env::default();
+        let input = make_vec(&env, &["a", "b"]);
+        let result = paginate(&env, input, 10, 5);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn paginate_limit_overflow() {
+        let env = Env::default();
+        let input = make_vec(&env, &["a", "b", "c"]);
+        let result = paginate(&env, input, 1, 100);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get(0).unwrap(), String::from_str(&env, "b"));
+        assert_eq!(result.get(1).unwrap(), String::from_str(&env, "c"));
+    }
+
+    #[test]
+    fn paginate_start_zero_full_limit() {
+        let env = Env::default();
+        let input = make_vec(&env, &["x", "y", "z"]);
+        let result = paginate(&env, input, 0, 3);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn paginate_start_equals_length() {
+        let env = Env::default();
+        let input = make_vec(&env, &["a", "b", "c"]);
+        let result = paginate(&env, input, 3, 5);
+        assert_eq!(result.len(), 0);
     }
 }

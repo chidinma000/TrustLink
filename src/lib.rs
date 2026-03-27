@@ -16,9 +16,10 @@ use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, Stri
 use crate::events::Events;
 use crate::storage::Storage;
 use crate::types::{
-    Attestation, AttestationStatus, AuditAction, AuditEntry, ClaimTypeInfo, ContractConfig,
-    ContractMetadata, Endorsement, Error, FeeConfig, GlobalStats, HealthStatus, IssuerMetadata,
-    IssuerStats, IssuerTier, MultiSigProposal, RateLimitConfig, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
+    Attestation, AttestationRequest, AttestationStatus, AuditAction, AuditEntry, ClaimTypeInfo,
+    ContractConfig, ContractMetadata, Endorsement, Error, FeeConfig, GlobalStats, HealthStatus,
+    IssuerMetadata, IssuerStats, IssuerTier, MultiSigProposal, RequestStatus, TtlConfig,
+    ATTESTATION_REQUEST_TTL_SECS, MULTISIG_PROPOSAL_TTL_SECS,
 };
 use crate::validation::Validation;
 
@@ -1574,64 +1575,217 @@ impl TrustLinkContract {
         }
     }
 
-    /// Transfer ownership of an attestation to a new issuer (admin only).
+    // -------------------------------------------------------------------------
+    // Pull-based attestation requests
+    // -------------------------------------------------------------------------
+
+    /// Submit an attestation request from `subject` to a registered `issuer`.
     ///
-    /// Used when an issuer is removed/deactivated, allowing admin to re-assign orphaned
-    /// attestations to a new issuer. Updates issuer field, indexes, stats, emits event.
+    /// The request is stored on-chain and expires after
+    /// [`ATTESTATION_REQUEST_TTL_SECS`] seconds if not acted on.
     ///
     /// # Errors
-    /// [`Error::Unauthorized`] if caller is not admin or new_issuer not registered.
-    /// [`Error::NotFound`] if attestation_id does not exist.
-    pub fn transfer_attestation(
+    /// - [`Error::NotInitialized`] — contract not initialized.
+    /// - [`Error::ContractPaused`] — contract is paused.
+    /// - [`Error::Unauthorized`] — `issuer` is not a registered issuer.
+    /// - [`Error::DuplicateRequest`] — an identical pending request already exists.
+    pub fn request_attestation(
         env: Env,
-        admin: Address,
-        attestation_id: String,
-        new_issuer: Address,
-    ) -> Result<(), Error> {
-        admin.require_auth();
-        Validation::require_admin(&env, &admin)?;
+        subject: Address,
+        issuer: Address,
+        claim_type: String,
+    ) -> Result<String, Error> {
+        subject.require_auth();
+        Validation::require_not_paused(&env)?;
+        Validation::require_issuer(&env, &issuer)?;
 
-        let mut attestation = Storage::get_attestation(&env, &attestation_id)?;
-        let old_issuer = attestation.issuer.clone();
+        let timestamp = env.ledger().timestamp();
+        let id = AttestationRequest::generate_id(&env, &subject, &issuer, &claim_type, timestamp);
 
-        Validation::require_issuer(&env, &new_issuer)?;
-
-        if old_issuer == new_issuer {
-            return Ok(());
+        // Reject if a pending request with the same ID already exists.
+        if let Ok(existing) = Storage::get_attestation_request(&env, &id) {
+            if existing.status == RequestStatus::Pending {
+                return Err(Error::DuplicateRequest);
+            }
         }
 
-        // Update indexes
-        Storage::remove_issuer_attestation(&env, &old_issuer, &attestation_id);
-        let mut old_stats = Storage::get_issuer_stats(&env, &old_issuer);
-        old_stats.total_issued = old_stats.total_issued.saturating_sub(1);
-        Storage::set_issuer_stats(&env, &old_issuer, &old_stats);
+        let expires_at = timestamp + ATTESTATION_REQUEST_TTL_SECS;
+        let request = AttestationRequest {
+            id: id.clone(),
+            subject,
+            issuer: issuer.clone(),
+            claim_type,
+            timestamp,
+            expires_at,
+            status: RequestStatus::Pending,
+            rejection_reason: None,
+        };
 
-        attestation.issuer = new_issuer.clone();
-        Storage::set_attestation(&env, &attestation);
+        Storage::set_attestation_request(&env, &request);
+        Storage::add_issuer_request(&env, &issuer, &id);
 
-        Storage::add_issuer_attestation(&env, &new_issuer, &attestation_id);
-        let mut new_stats = Storage::get_issuer_stats(&env, &new_issuer);
-        new_stats.total_issued += 1;
-        Storage::set_issuer_stats(&env, &new_issuer, &new_stats);
-
-        // Event and audit
-        Events::attestation_transferred(&env, &attestation_id, &old_issuer, &new_issuer);
-        let timestamp = env.ledger().timestamp();
-        Storage::append_audit_entry(
+        Events::attestation_requested(
             &env,
-            &attestation_id,
-            &AuditEntry {
-                action: AuditAction::Transferred,
-                actor: admin.clone(),
-                timestamp,
-                details: Some(format!(
-                    "{}",
-                    new_issuer.to_string()
-                )),
-            },
+            &request.id,
+            &request.subject,
+            &request.issuer,
+            &request.claim_type,
+            expires_at,
         );
 
+        Ok(id)
+    }
+
+    /// Fulfill a pending attestation request, creating a standard attestation.
+    ///
+    /// # Errors
+    /// - [`Error::NotFound`] — request does not exist.
+    /// - [`Error::Unauthorized`] — caller is not the request's target issuer.
+    /// - [`Error::RequestAlreadyProcessed`] — request was already fulfilled or rejected.
+    /// - [`Error::RequestExpired`] — request expired before being acted on.
+    pub fn fulfill_request(
+        env: Env,
+        issuer: Address,
+        request_id: String,
+        expiration: Option<u64>,
+    ) -> Result<String, Error> {
+        issuer.require_auth();
+        Validation::require_not_paused(&env)?;
+
+        let mut request = Storage::get_attestation_request(&env, &request_id)?;
+
+        if request.issuer != issuer {
+            return Err(Error::Unauthorized);
+        }
+        if request.status != RequestStatus::Pending {
+            return Err(Error::RequestAlreadyProcessed);
+        }
+        if env.ledger().timestamp() >= request.expires_at {
+            return Err(Error::RequestExpired);
+        }
+
+        validate_native_expiration(&env, expiration)?;
+        charge_attestation_fee(&env, &issuer)?;
+
+        let timestamp = env.ledger().timestamp();
+        let attestation_id = Attestation::generate_id(
+            &env,
+            &issuer,
+            &request.subject,
+            &request.claim_type,
+            timestamp,
+        );
+
+        let attestation = Attestation {
+            id: attestation_id.clone(),
+            issuer: issuer.clone(),
+            subject: request.subject.clone(),
+            claim_type: request.claim_type.clone(),
+            timestamp,
+            expiration,
+            revoked: false,
+            metadata: None,
+            valid_from: None,
+            imported: false,
+            bridged: false,
+            source_chain: None,
+            source_tx: None,
+            tags: None,
+            revocation_reason: None,
+            deleted: false,
+        };
+
+        store_attestation(&env, &attestation);
+        Storage::increment_total_attestations(&env, 1);
+
+        let audit_entry = AuditEntry {
+            action: AuditAction::Created,
+            actor: issuer.clone(),
+            timestamp,
+            details: None,
+        };
+        Storage::append_audit_entry(&env, &attestation_id, &audit_entry);
+
+        Events::attestation_created(&env, &attestation);
+
+        // Mark request fulfilled.
+        request.status = RequestStatus::Fulfilled;
+        Storage::set_attestation_request(&env, &request);
+
+        Events::request_fulfilled(&env, &request_id, &issuer, &attestation_id);
+
+        Ok(attestation_id)
+    }
+
+    /// Reject a pending attestation request.
+    ///
+    /// # Errors
+    /// - [`Error::NotFound`] — request does not exist.
+    /// - [`Error::Unauthorized`] — caller is not the request's target issuer.
+    /// - [`Error::RequestAlreadyProcessed`] — request was already fulfilled or rejected.
+    /// - [`Error::ReasonTooLong`] — rejection reason exceeds 128 characters.
+    pub fn reject_request(
+        env: Env,
+        issuer: Address,
+        request_id: String,
+        reason: Option<String>,
+    ) -> Result<(), Error> {
+        issuer.require_auth();
+
+        let mut request = Storage::get_attestation_request(&env, &request_id)?;
+
+        if request.issuer != issuer {
+            return Err(Error::Unauthorized);
+        }
+        if request.status != RequestStatus::Pending {
+            return Err(Error::RequestAlreadyProcessed);
+        }
+
+        validate_reason(&reason)?;
+
+        request.status = RequestStatus::Rejected;
+        request.rejection_reason = reason.clone();
+        Storage::set_attestation_request(&env, &request);
+
+        Events::request_rejected(&env, &request_id, &issuer, &reason);
+
         Ok(())
+    }
+
+    /// Return a paginated list of pending request IDs for `issuer`.
+    ///
+    /// Expired or processed requests are filtered out of the results.
+    pub fn get_pending_requests(
+        env: Env,
+        issuer: Address,
+        start: u32,
+        limit: u32,
+    ) -> Vec<String> {
+        let now = env.ledger().timestamp();
+        let all_ids = Storage::get_issuer_requests(&env, &issuer);
+
+        // Collect only IDs whose request is still pending and not expired.
+        let mut pending = Vec::new(&env);
+        for id in all_ids.iter() {
+            if let Ok(req) = Storage::get_attestation_request(&env, &id) {
+                if req.status == RequestStatus::Pending && now < req.expires_at {
+                    pending.push_back(id);
+                }
+            }
+        }
+
+        crate::storage::paginate(&env, pending, start, limit)
+    }
+
+    /// Retrieve a single attestation request by ID.
+    ///
+    /// # Errors
+    /// - [`Error::NotFound`] — no request with that ID exists.
+    pub fn get_attestation_request(
+        env: Env,
+        request_id: String,
+    ) -> Result<AttestationRequest, Error> {
+        Storage::get_attestation_request(&env, &request_id)
     }
 }
 
