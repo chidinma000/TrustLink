@@ -1474,4 +1474,65 @@ impl TrustLinkContract {
             ),
         }
     }
+
+    /// Transfer ownership of an attestation to a new issuer (admin only).
+    ///
+    /// Used when an issuer is removed/deactivated, allowing admin to re-assign orphaned
+    /// attestations to a new issuer. Updates issuer field, indexes, stats, emits event.
+    ///
+    /// # Errors
+    /// [`Error::Unauthorized`] if caller is not admin or new_issuer not registered.
+    /// [`Error::NotFound`] if attestation_id does not exist.
+    pub fn transfer_attestation(
+        env: Env,
+        admin: Address,
+        attestation_id: String,
+        new_issuer: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        Validation::require_admin(&env, &admin)?;
+
+        let mut attestation = Storage::get_attestation(&env, &attestation_id)?;
+        let old_issuer = attestation.issuer.clone();
+
+        Validation::require_issuer(&env, &new_issuer)?;
+
+        if old_issuer == new_issuer {
+            return Ok(());
+        }
+
+        // Update indexes
+        Storage::remove_issuer_attestation(&env, &old_issuer, &attestation_id);
+        let mut old_stats = Storage::get_issuer_stats(&env, &old_issuer);
+        old_stats.total_issued = old_stats.total_issued.saturating_sub(1);
+        Storage::set_issuer_stats(&env, &old_issuer, &old_stats);
+
+        attestation.issuer = new_issuer.clone();
+        Storage::set_attestation(&env, &attestation);
+
+        Storage::add_issuer_attestation(&env, &new_issuer, &attestation_id);
+        let mut new_stats = Storage::get_issuer_stats(&env, &new_issuer);
+        new_stats.total_issued += 1;
+        Storage::set_issuer_stats(&env, &new_issuer, &new_stats);
+
+        // Event and audit
+        Events::attestation_transferred(&env, &attestation_id, &old_issuer, &new_issuer);
+        let timestamp = env.ledger().timestamp();
+        Storage::append_audit_entry(
+            &env,
+            &attestation_id,
+            &AuditEntry {
+                action: AuditAction::Transferred,
+                actor: admin.clone(),
+                timestamp,
+                details: Some(format!(
+                    "{}",
+                    new_issuer.to_string()
+                )),
+            },
+        );
+
+        Ok(())
+    }
 }
+

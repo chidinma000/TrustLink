@@ -148,22 +148,34 @@ pub enum AttestationStatus {
     Pending,
 }
 
-/// Errors returned by TrustLink contract functions.
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum Error {
-    AlreadyInitialized = 1,
-    NotInitialized = 2,
-    Unauthorized = 3,
-    NotFound = 4,
-    DuplicateAttestation = 5,
-    AlreadyRevoked = 6,
-    Expired = 7,
-    InvalidValidFrom = 8,
-    InvalidExpiration = 9,
-    /// Attestation count for an issuer or subject has reached the configured limit.
-    LimitExceeded = 10,
+/// The action recorded in an audit log entry.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuditAction {
+    Created,
+    Revoked,
+    Renewed,
+    Updated,
+    Transferred,
+}
+
+/// A single immutable entry in an attestation's audit log.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditEntry {
+    pub action: AuditAction,
+    pub actor: Address,
+    pub timestamp: u64,
+    pub details: Option<String>,
+}
+
+/// A social-proof endorsement of an existing attestation by a registered issuer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Endorsement {
+    pub attestation_id: String,
+    pub endorser: Address,
+    pub timestamp: u64,
 }
 
 /// Configurable storage limits to prevent exhaustion attacks.

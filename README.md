@@ -389,6 +389,32 @@ if fully_verified {
 
 **Relationship to `has_any_claim`:** `has_any_claim` uses OR-logic (at least one match), while `has_all_claims` uses AND-logic (every claim must match). Use `has_all_claims` when a workflow requires a complete set of credentials, such as high-value lending that demands both KYC and AML clearance.
 
+### Transfer Attestations (Admin Only)
+
+Admin can transfer ownership of an attestation to a new registered issuer. This is useful when an issuer account is deactivated/compromised, allowing orphaned attestations to be re-assigned to a successor issuer.
+
+```rust
+// Register the new issuer first
+contract.register_issuer(&admin, &new_issuer);
+
+// Transfer attestation ownership
+contract.transfer_attestation(&admin, &attestation_id, &new_issuer);
+```
+
+**Effects:**
+- Updates `issuer` field in attestation record
+- Removes ID from old issuer's attestation index
+- Adds ID to new issuer's attestation index
+- Updates `total_issued` stats for both issuers
+- Emits `attestation_transferred` event: `["att_xfer", old_issuer] (attestation_id, new_issuer)`
+- Appends `Transferred` audit entry: `actor=admin, details=new_issuer_address`
+
+**Validations:**
+- Caller must be admin
+- `attestation_id` must exist
+- `new_issuer` must be registered
+- Idempotent if `old_issuer == new_issuer`
+
 ### Revoke Attestations
 
 ```rust
