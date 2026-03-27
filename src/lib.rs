@@ -16,7 +16,7 @@ use crate::storage::Storage;
 use crate::types::{
     Attestation, AttestationStatus, AuditAction, AuditEntry, ClaimTypeInfo, ContractConfig,
     ContractMetadata, Endorsement, Error, FeeConfig, GlobalStats, HealthStatus, IssuerMetadata,
-    IssuerStats, IssuerTier, MultiSigProposal, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
+    IssuerStats, IssuerTier, MultiSigProposal, RateLimitConfig, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
 };
 use crate::validation::Validation;
 
@@ -103,6 +103,24 @@ fn validate_fee_config(fee: i128, fee_token: &Option<Address>) -> Result<(), Err
 
     if fee > 0 && fee_token.is_none() {
         return Err(Error::FeeTokenRequired);
+    }
+
+    Ok(())
+}
+
+fn check_rate_limit(env: &Env, issuer: &Address) -> Result<(), Error> {
+    if let Some(config) = Storage::get_rate_limit_config(env) {
+        if config.min_issuance_interval == 0 {
+            return Ok(());
+        }
+
+        let current_time = env.ledger().timestamp();
+        if let Some(last_issuance) = Storage::get_last_issuance_time(env, issuer) {
+            let elapsed = current_time.saturating_sub(last_issuance);
+            if elapsed < config.min_issuance_interval {
+                return Err(Error::RateLimited);
+            }
+        }
     }
 
     Ok(())
@@ -322,6 +340,36 @@ impl TrustLinkContract {
         Ok(())
     }
 
+    /// Configure the minimum issuance interval (rate limit) for attestation creation.
+    ///
+    /// When `min_issuance_interval` is 0 (default), rate limiting is disabled.
+    /// When > 0, issuers must wait at least that many seconds between attestation creations.
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`] — caller is not the admin.
+    pub fn set_rate_limit(
+        env: Env,
+        admin: Address,
+        min_issuance_interval: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        Validation::require_admin(&env, &admin)?;
+
+        Storage::set_rate_limit_config(
+            &env,
+            &RateLimitConfig {
+                min_issuance_interval,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Retrieve the current rate limit configuration, or `None` if not set.
+    pub fn get_rate_limit(env: Env) -> Option<RateLimitConfig> {
+        Storage::get_rate_limit_config(&env)
+    }
+
     /// Pause the contract, disabling all attestation write operations.
     ///
     /// Read-only functions (`has_valid_claim`, `get_attestation`, etc.) remain
@@ -374,24 +422,36 @@ impl TrustLinkContract {
         validate_metadata(&metadata)?;
         validate_tags(&tags)?;
         validate_native_expiration(&env, expiration)?;
+        check_rate_limit(&env, &issuer)?;
 
         if issuer == subject {
             return Err(Error::Unauthorized);
         }
 
         let timestamp = env.ledger().timestamp();
-        let attestation_id =
-            Attestation::generate_id(&env, &issuer, &subject, &claim_type, timestamp);
 
-        if Storage::has_attestation(&env, &attestation_id) {
-            return Err(Error::DuplicateAttestation);
+        // Enforce storage exhaustion limits
+        let limits = Storage::get_limits(&env);
+        let issuer_count = Storage::get_issuer_attestations(&env, &issuer).len();
+        if issuer_count >= limits.max_attestations_per_issuer {
+            return Err(Error::LimitExceeded);
+        }
+        let subject_count = Storage::get_subject_attestations(&env, &subject).len();
+        if subject_count >= limits.max_attestations_per_subject {
+            return Err(Error::LimitExceeded);
+        }
+
+        if let Some(vf) = valid_from {
+            if vf <= timestamp {
+                return Err(Error::InvalidValidFrom);
+            }
         }
 
         charge_attestation_fee(&env, &issuer)?;
 
         let attestation = Attestation {
             id: attestation_id.clone(),
-            issuer,
+            issuer: issuer.clone(),
             subject,
             claim_type,
             timestamp,
@@ -410,6 +470,7 @@ impl TrustLinkContract {
 
         store_attestation(&env, &attestation);
         Storage::increment_total_attestations(&env, 1);
+        Storage::set_last_issuance_time(&env, &issuer, timestamp);
         Events::attestation_created(&env, &attestation);
         Storage::append_audit_entry(
             &env,
@@ -551,9 +612,18 @@ impl TrustLinkContract {
         issuer.require_auth();
         Validation::require_issuer(&env, &issuer)?;
         validate_native_expiration(&env, expiration)?;
+        check_rate_limit(&env, &issuer)?;
 
         let timestamp = env.ledger().timestamp();
-        let mut ids = Vec::new(&env);
+
+        // Enforce issuer-level limit up front for the whole batch
+        let limits = Storage::get_limits(&env);
+        let issuer_count = Storage::get_issuer_attestations(&env, &issuer).len();
+        if issuer_count.saturating_add(subjects.len()) > limits.max_attestations_per_issuer {
+            return Err(Error::LimitExceeded);
+        }
+
+        let mut ids: Vec<String> = Vec::new(&env);
 
         for subject in subjects.iter() {
             let attestation_id =
@@ -561,6 +631,12 @@ impl TrustLinkContract {
 
             if Storage::has_attestation(&env, &attestation_id) {
                 return Err(Error::DuplicateAttestation);
+            }
+
+            // Per-subject limit check
+            let subject_count = Storage::get_subject_attestations(&env, &subject).len();
+            if subject_count >= limits.max_attestations_per_subject {
+                return Err(Error::LimitExceeded);
             }
 
             let attestation = Attestation {
@@ -598,6 +674,7 @@ impl TrustLinkContract {
         }
 
         Storage::increment_total_attestations(&env, ids.len() as u64);
+        Storage::set_last_issuance_time(&env, &issuer, timestamp);
         Ok(ids)
     }
 
@@ -1295,16 +1372,48 @@ impl TrustLinkContract {
         Ok(())
     }
 
-    /// Return all endorsements for the given attestation.
-    pub fn get_endorsements(env: Env, attestation_id: String) -> Vec<Endorsement> {
-        Storage::get_endorsements(&env, &attestation_id)
+    /// Configure storage exhaustion limits (admin only).
+    ///
+    /// Sets the maximum number of attestations allowed per issuer and per subject.
+    /// Limits are stored in instance storage and take effect immediately for all
+    /// subsequent `create_attestation` calls.
+    ///
+    /// # Parameters
+    /// - `admin` — current administrator address (must authorize).
+    /// - `max_attestations_per_issuer` — max attestations a single issuer may create.
+    /// - `max_attestations_per_subject` — max attestations a single subject may hold.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract has not been initialized.
+    /// - [`Error::Unauthorized`] — `admin` is not the registered administrator.
+    pub fn set_limits(
+        env: Env,
+        admin: Address,
+        max_attestations_per_issuer: u32,
+        max_attestations_per_subject: u32,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        Validation::require_admin(&env, &admin)?;
+
+        Storage::set_limits(&env, &StorageLimits {
+            max_attestations_per_issuer,
+            max_attestations_per_subject,
+        });
+        Ok(())
     }
 
-    /// Return the number of endorsements for the given attestation.
-    pub fn get_endorsement_count(env: Env, attestation_id: String) -> u32 {
-        Storage::get_endorsements(&env, &attestation_id).len()
+    /// Return the current storage limits.
+    ///
+    /// Returns the admin-configured limits, or the defaults
+    /// (10,000 per issuer / 100 per subject) if never explicitly set.
+    pub fn get_limits(env: Env) -> StorageLimits {
+        Storage::get_limits(&env)
     }
 
+    /// Return the semver version string set at initialization (e.g. `"1.0.0"`).
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract has not been initialized.
     pub fn get_version(env: Env) -> Result<String, Error> {
         Storage::get_version(&env).ok_or(Error::NotInitialized)
     }
