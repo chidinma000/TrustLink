@@ -1942,3 +1942,310 @@ fn test_limits_updated_take_effect_immediately() {
 
     assert_eq!(client.get_issuer_attestations(&issuer, &0, &10).len(), 2);
 }
+
+// ============================================================================
+// TTL Tests
+//
+// Verify that persistent storage TTL is correctly set on every write operation.
+// Uses `env.as_contract` + `storage().persistent().get_ttl()` (SDK v21+).
+//
+// Constants mirrored from storage.rs:
+//   DAY_IN_LEDGERS       = 17_280
+//   DEFAULT_TTL_DAYS     = 30
+//   EXPECTED_TTL_LEDGERS = 17_280 * 30 = 518_400
+// ============================================================================
+#[cfg(test)]
+mod ttl_tests {
+    use super::*;
+    use soroban_sdk::{
+        testutils::{storage::Persistent as _, Address as _, Ledger},
+        Env, String,
+    };
+
+    // Mirror the constants from storage.rs so tests are self-documenting.
+    const DAY_IN_LEDGERS: u32 = 17_280;
+    const DEFAULT_TTL_DAYS: u32 = 30;
+    const EXPECTED_TTL: u32 = DAY_IN_LEDGERS * DEFAULT_TTL_DAYS; // 518_400
+
+    /// Shared setup: register contract, initialize, register one issuer.
+    fn setup(env: &Env) -> (Address, Address, Address, TrustLinkContractClient<'_>) {
+        let contract_id = env.register_contract(None, TrustLinkContract);
+        let client = TrustLinkContractClient::new(env, &contract_id);
+        let admin = Address::generate(env);
+        let issuer = Address::generate(env);
+        let subject = Address::generate(env);
+        client.initialize(&admin, &None);
+        client.register_issuer(&admin, &issuer);
+        (admin, issuer, subject, client)
+    }
+
+    // -------------------------------------------------------------------------
+    // Attestation record TTL
+    // -------------------------------------------------------------------------
+
+    /// After `create_attestation`, the attestation entry's TTL must equal
+    /// `DEFAULT_TTL_DAYS * DAY_IN_LEDGERS` (518 400 ledgers).
+    #[test]
+    fn test_attestation_ttl_set_on_creation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, issuer, subject, client) = setup(&env);
+        let contract_id = client.address.clone();
+
+        let claim = String::from_str(&env, "KYC");
+        let id = client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+        let ttl = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::storage::StorageKey::Attestation(id.clone()))
+        });
+
+        assert_eq!(
+            ttl, EXPECTED_TTL,
+            "attestation TTL should be {EXPECTED_TTL} ledgers after creation"
+        );
+    }
+
+    /// After `revoke_attestation`, the updated attestation entry's TTL must be
+    /// refreshed to the full default value.
+    #[test]
+    fn test_attestation_ttl_refreshed_on_revoke() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, issuer, subject, client) = setup(&env);
+        let contract_id = client.address.clone();
+
+        let claim = String::from_str(&env, "KYC");
+        let id = client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+        // Advance ledger so TTL would have decreased if not refreshed.
+        env.ledger().with_mut(|l| l.sequence_number += 1_000);
+
+        client.revoke_attestation(&issuer, &id, &None);
+
+        let ttl = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::storage::StorageKey::Attestation(id.clone()))
+        });
+
+        assert_eq!(
+            ttl, EXPECTED_TTL,
+            "attestation TTL should be refreshed to {EXPECTED_TTL} after revocation"
+        );
+    }
+
+    /// After `renew_attestation`, the attestation entry's TTL must be refreshed.
+    #[test]
+    fn test_attestation_ttl_refreshed_on_renewal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, issuer, subject, client) = setup(&env);
+        let contract_id = client.address.clone();
+
+        let claim = String::from_str(&env, "KYC");
+        let id = client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+        env.ledger().with_mut(|l| {
+            l.sequence_number += 1_000;
+            l.timestamp += 10_000;
+        });
+
+        let new_expiry: Option<u64> = Some(env.ledger().timestamp() + 100_000);
+        client.renew_attestation(&issuer, &id, &new_expiry);
+
+        let ttl = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::storage::StorageKey::Attestation(id.clone()))
+        });
+
+        assert_eq!(
+            ttl, EXPECTED_TTL,
+            "attestation TTL should be refreshed to {EXPECTED_TTL} after renewal"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Subject index TTL
+    // -------------------------------------------------------------------------
+
+    /// After `create_attestation`, the subject attestation index TTL must equal
+    /// the default TTL.
+    #[test]
+    fn test_subject_index_ttl_set_on_attestation_creation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, issuer, subject, client) = setup(&env);
+        let contract_id = client.address.clone();
+
+        let claim = String::from_str(&env, "KYC");
+        client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+        let ttl = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::storage::StorageKey::SubjectAttestations(
+                    subject.clone(),
+                ))
+        });
+
+        assert_eq!(
+            ttl, EXPECTED_TTL,
+            "subject index TTL should be {EXPECTED_TTL} after attestation creation"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Issuer index TTL
+    // -------------------------------------------------------------------------
+
+    /// After `create_attestation`, the issuer attestation index TTL must equal
+    /// the default TTL.
+    #[test]
+    fn test_issuer_index_ttl_set_on_attestation_creation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, issuer, subject, client) = setup(&env);
+        let contract_id = client.address.clone();
+
+        let claim = String::from_str(&env, "KYC");
+        client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+        let ttl = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::storage::StorageKey::IssuerAttestations(
+                    issuer.clone(),
+                ))
+        });
+
+        assert_eq!(
+            ttl, EXPECTED_TTL,
+            "issuer index TTL should be {EXPECTED_TTL} after attestation creation"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Issuer registry TTL
+    // -------------------------------------------------------------------------
+
+    /// After `register_issuer`, the issuer presence flag TTL must equal the
+    /// default TTL.
+    #[test]
+    fn test_issuer_registry_ttl_set_on_registration() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, issuer, _, client) = setup(&env);
+        let contract_id = client.address.clone();
+
+        let ttl = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::storage::StorageKey::Issuer(issuer.clone()))
+        });
+
+        assert_eq!(
+            ttl, EXPECTED_TTL,
+            "issuer registry entry TTL should be {EXPECTED_TTL} after registration"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Audit log TTL
+    // -------------------------------------------------------------------------
+
+    /// After `create_attestation`, the audit log entry TTL must equal the
+    /// default TTL.
+    #[test]
+    fn test_audit_log_ttl_set_on_creation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, issuer, subject, client) = setup(&env);
+        let contract_id = client.address.clone();
+
+        let claim = String::from_str(&env, "KYC");
+        let id = client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+        let ttl = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::storage::StorageKey::AuditLog(id.clone()))
+        });
+
+        assert_eq!(
+            ttl, EXPECTED_TTL,
+            "audit log TTL should be {EXPECTED_TTL} after attestation creation"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Custom TTL configuration
+    // -------------------------------------------------------------------------
+
+    /// When the contract is initialized with a custom TTL (e.g. 60 days), all
+    /// subsequent persistent writes must use that value instead of the default.
+    #[test]
+    fn test_custom_ttl_config_applied_to_attestation() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, TrustLinkContract);
+        let client = TrustLinkContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+
+        let custom_days: u32 = 60;
+        client.initialize(&admin, &Some(custom_days));
+        client.register_issuer(&admin, &issuer);
+
+        let claim = String::from_str(&env, "KYC");
+        let id = client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+        let expected = DAY_IN_LEDGERS * custom_days; // 1_036_800
+        let ttl = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::storage::StorageKey::Attestation(id.clone()))
+        });
+
+        assert_eq!(
+            ttl, expected,
+            "attestation TTL should reflect custom config of {custom_days} days ({expected} ledgers)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Issuer metadata TTL
+    // -------------------------------------------------------------------------
+
+    /// After `set_issuer_metadata`, the metadata entry TTL must equal the
+    /// default TTL.
+    #[test]
+    fn test_issuer_metadata_ttl_set_on_write() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, issuer, _, client) = setup(&env);
+        let contract_id = client.address.clone();
+
+        let meta = IssuerMetadata {
+            name: String::from_str(&env, "Acme"),
+            url: String::from_str(&env, "https://acme.example"),
+            description: String::from_str(&env, "Test issuer"),
+        };
+        client.set_issuer_metadata(&issuer, &meta);
+
+        let ttl = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::storage::StorageKey::IssuerMetadata(issuer.clone()))
+        });
+
+        assert_eq!(
+            ttl, EXPECTED_TTL,
+            "issuer metadata TTL should be {EXPECTED_TTL} after write"
+        );
+    }
+}
