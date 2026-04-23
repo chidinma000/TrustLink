@@ -232,10 +232,13 @@ fn store_attestation(env: &Env, attestation: &Attestation) {
     Storage::add_subject_attestation(env, &attestation.subject, &attestation.id);
     Storage::add_issuer_attestation(env, &attestation.issuer, &attestation.id);
 
-    // Increment total_issued counter atomically with the attestation write.
+    // Increment total_issued counter for this issuer.
     let mut stats = Storage::get_issuer_stats(env, &attestation.issuer);
     stats.total_issued += 1;
     Storage::set_issuer_stats(env, &attestation.issuer, &stats);
+
+    // Increment global total_attestations counter.
+    Storage::increment_total_attestations(env, 1);
 }
 
 /// Fire the expiration hook for `subject` if one is registered and the
@@ -484,6 +487,11 @@ impl TrustLinkContract {
         Validation::require_admin(&env, &admin)?;
         validate_fee_config(&env, fee, &fee_token)?;
 
+        // Prevent admin from setting themselves as fee_collector
+        if admin == collector {
+            return Err(Error::Unauthorized);
+        }
+
         Storage::set_fee_config(
             &env,
             &FeeConfig {
@@ -589,6 +597,9 @@ impl TrustLinkContract {
             return Err(Error::SubjectNotWhitelisted);
         }
 
+        // Check rate limit before creating attestation
+        check_rate_limit(env, &issuer)?;
+
         let timestamp = env.ledger().timestamp();
         let attestation_id = Attestation::generate_id(env, &issuer, &subject, &claim_type, timestamp);
 
@@ -596,7 +607,11 @@ impl TrustLinkContract {
             return Err(Error::DuplicateAttestation);
         }
 
-        charge_attestation_fee(env, &issuer)?;
+        // Validate claim_type length (enforce max 64 characters)
+        let claim_type_len = claim_type.len();
+        if claim_type_len > 64 {
+            return Err(Error::InvalidClaimType);
+        }
 
         let attestation = Attestation {
             id: attestation_id.clone(),
@@ -618,8 +633,8 @@ impl TrustLinkContract {
             deleted: false,
         };
 
+        // Store attestation state BEFORE calling external token contract (reentrancy guard)
         store_attestation(env, &attestation);
-        Storage::increment_total_attestations(env, 1);
         Events::attestation_created(env, &attestation);
         Storage::append_audit_entry(
             env,
@@ -631,6 +646,14 @@ impl TrustLinkContract {
                 details: None,
             },
         );
+
+        // Charge fee after state is persisted (reentrancy guard)
+        charge_attestation_fee(env, &issuer)?;
+
+        // Record last issuance time for rate limiting
+        Storage::set_last_issuance_time(env, &issuer, timestamp);
+
+        Events::attestation_created(env, &attestation);
         Ok(attestation_id)
     }
 
@@ -719,7 +742,6 @@ impl TrustLinkContract {
         };
 
         store_attestation(&env, &attestation);
-        Storage::increment_total_attestations(&env, 1);
         Events::attestation_imported(&env, &attestation);
         Storage::append_audit_entry(
             &env,
@@ -781,7 +803,6 @@ impl TrustLinkContract {
         };
 
         store_attestation(&env, &attestation);
-        Storage::increment_total_attestations(&env, 1);
         Events::attestation_bridged(&env, &attestation);
         Storage::append_audit_entry(
             &env,
@@ -869,7 +890,6 @@ impl TrustLinkContract {
             ids.push_back(attestation_id);
         }
 
-        Storage::increment_total_attestations(&env, ids.len() as u64);
         Storage::set_last_issuance_time(&env, &issuer, timestamp);
         Ok(ids)
     }
@@ -882,6 +902,7 @@ impl TrustLinkContract {
     ) -> Result<(), Error> {
         issuer.require_auth();
         Validation::require_not_paused(&env)?;
+        Validation::require_issuer(&env, &issuer)?;
         validate_reason(&reason)?;
         let mut attestation = Storage::get_attestation(&env, &attestation_id)?;
 
@@ -925,6 +946,7 @@ impl TrustLinkContract {
         reason: Option<String>,
     ) -> Result<u32, Error> {
         issuer.require_auth();
+        Validation::require_issuer(&env, &issuer)?;
         validate_reason(&reason)?;
 
         let mut count = 0;
@@ -1577,7 +1599,6 @@ impl TrustLinkContract {
             };
 
             store_attestation(&env, &attestation);
-            Storage::increment_total_attestations(&env, 1);
             Events::attestation_created(&env, &attestation);
             Events::multisig_activated(&env, &proposal_id, &attestation_id);
         } else {
@@ -1707,6 +1728,26 @@ impl TrustLinkContract {
             issuer_count: stats.total_issuers,
             total_attestations: stats.total_attestations,
         }
+    }
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        Validation::require_admin(&env, &admin)?;
+        Storage::set_paused(&env, true);
+        Events::contract_paused(&env, &admin);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        Validation::require_admin(&env, &admin)?;
+        Storage::set_paused(&env, false);
+        Events::contract_unpaused(&env, &admin);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        Storage::is_paused(&env)
     }
 
     pub fn get_contract_metadata(env: Env) -> Result<ContractMetadata, Error> {

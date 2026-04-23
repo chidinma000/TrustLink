@@ -51,4 +51,6 @@ pub enum Error {
     CannotDelegateToSelf = 28,
     /// Cannot remove the last remaining admin from council
     LastAdminCannotBeRemoved = 29,
+    /// Issuer is rate-limited and must wait before creating another attestation.
+    RateLimited = 30,
 }
