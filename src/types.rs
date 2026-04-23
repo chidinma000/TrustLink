@@ -189,47 +189,36 @@ pub enum AuditAction {
     Transferred,
 }
 
-/// A single immutable entry in an attestation's audit log.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuditEntry {
-    pub action: AuditAction,
-    pub actor: Address,
-    pub timestamp: u64,
-    pub details: Option<String>,
-}
-
-/// A social-proof endorsement of an existing attestation by a registered issuer.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Endorsement {
-    pub attestation_id: String,
-    pub endorser: Address,
-    pub timestamp: u64,
-}
-
-/// Configurable storage limits to prevent exhaustion attacks.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StorageLimits {
-    /// Maximum number of attestations a single issuer may create. Default: 10,000.
-    pub max_attestations_per_issuer: u32,
-    /// Maximum number of attestations a single subject may hold. Default: 100.
-    pub max_attestations_per_subject: u32,
-}
-
-/// Delegation from an issuer to a sub-issuer for specific claim types.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Delegation {
-    /// Issuer delegating authority.
-    pub delegator: Address,
-    /// Sub-issuer receiving delegation.
-    pub delegate: Address,
-    /// Specific claim type this delegation covers.
-    pub claim_type: String,
-    /// Optional expiration timestamp for this delegation.
-    pub expiration: Option<u64>,
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    Unauthorized = 3,
+    NotFound = 4,
+    DuplicateAttestation = 5,
+    AlreadyRevoked = 6,
+    Expired = 7,
+    InvalidValidFrom = 8,
+    InvalidExpiration = 9,
+    MetadataTooLong = 10,
+    InvalidTimestamp = 11,
+    InvalidFee = 12,
+    FeeTokenRequired = 13,
+    TooManyTags = 14,
+    TagTooLong = 15,
+    /// Threshold must be >= 1 and <= number of required signers.
+    InvalidThreshold = 16,
+    /// The signer is not in the proposal's required_signers list.
+    NotRequiredSigner = 17,
+    /// The signer has already co-signed this proposal.
+    AlreadySigned = 18,
+    /// The proposal has already been finalized.
+    ProposalFinalized = 19,
+    /// The proposal has expired without reaching threshold.
+    ProposalExpired = 20,
+    /// The contract is paused and cannot accept state-changing operations.
+    ContractPaused = 21,
 }
 
 #[contracttype]
