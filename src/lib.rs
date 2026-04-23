@@ -477,6 +477,11 @@ impl TrustLinkContract {
         Validation::require_admin(&env, &admin)?;
         validate_fee_config(fee, &fee_token)?;
 
+        // Prevent admin from setting themselves as fee_collector
+        if admin == collector {
+            return Err(Error::Unauthorized);
+        }
+
         Storage::set_fee_config(
             &env,
             &FeeConfig {
@@ -582,6 +587,9 @@ impl TrustLinkContract {
             return Err(Error::SubjectNotWhitelisted);
         }
 
+        // Check rate limit before creating attestation
+        check_rate_limit(env, &issuer)?;
+
         let timestamp = env.ledger().timestamp();
         let attestation_id = Attestation::generate_id(env, &issuer, &subject, &claim_type, timestamp);
 
@@ -589,7 +597,11 @@ impl TrustLinkContract {
             return Err(Error::DuplicateAttestation);
         }
 
-        charge_attestation_fee(env, &issuer)?;
+        // Validate claim_type length (enforce max 64 characters)
+        let claim_type_len = claim_type.len();
+        if claim_type_len > 64 {
+            return Err(Error::InvalidClaimType);
+        }
 
         let attestation = Attestation {
             id: attestation_id.clone(),
@@ -611,9 +623,9 @@ impl TrustLinkContract {
             deleted: false,
         };
 
+        // Store attestation state BEFORE calling external token contract (reentrancy guard)
         store_attestation(env, &attestation);
         Storage::increment_total_attestations(env, 1);
-        Events::attestation_created(env, &attestation);
         Storage::append_audit_entry(
             env,
             &attestation_id,
@@ -624,6 +636,14 @@ impl TrustLinkContract {
                 details: None,
             },
         );
+
+        // Charge fee after state is persisted (reentrancy guard)
+        charge_attestation_fee(env, &issuer)?;
+
+        // Record last issuance time for rate limiting
+        Storage::set_last_issuance_time(env, &issuer, timestamp);
+
+        Events::attestation_created(env, &attestation);
         Ok(attestation_id)
     }
 

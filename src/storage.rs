@@ -30,7 +30,7 @@
 
 use crate::types::{
     AdminCouncil, Attestation, AttestationRequest, AuditEntry, ClaimTypeInfo, Endorsement, Error, ExpirationHook,
-    FeeConfig, GlobalStats, IssuerMetadata, IssuerStats, IssuerTier, MultiSigProposal, TtlConfig, Delegation,
+    FeeConfig, GlobalStats, IssuerMetadata, IssuerStats, IssuerTier, MultiSigProposal, TtlConfig, Delegation, RateLimitConfig,
 };
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 use crate::types::{Attestation, ClaimTypeInfo, Error, IssuerMetadata, StorageLimits, Delegation};
@@ -88,6 +88,10 @@ pub enum StorageKey {
     SubjectWhitelist(Address, Address),
     /// Delegation from delegator to delegate for specific claim_type.
     Delegation((Address, Address, String)),
+    /// Rate limit configuration (global).
+    RateLimit,
+    /// Last attestation issuance timestamp for an issuer.
+    LastIssuanceTime(Address),
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -661,6 +665,33 @@ impl Storage {
     ) {
         let key = StorageKey::Delegation((delegator.clone(), delegate.clone(), claim_type.clone()));
         env.storage().persistent().remove(&key);
+    }
+
+    /// Persist rate limit configuration in instance storage.
+    pub fn set_rate_limit_config(env: &Env, config: &RateLimitConfig) {
+        let ttl = get_ttl_lifetime(env);
+        env.storage().instance().set(&StorageKey::RateLimit, config);
+        env.storage().instance().extend_ttl(ttl, ttl);
+    }
+
+    /// Retrieve rate limit configuration, or `None` if not set.
+    pub fn get_rate_limit_config(env: &Env) -> Option<RateLimitConfig> {
+        env.storage().instance().get(&StorageKey::RateLimit)
+    }
+
+    /// Record the current timestamp as the last issuance time for an issuer.
+    pub fn set_last_issuance_time(env: &Env, issuer: &Address, timestamp: u64) {
+        let key = StorageKey::LastIssuanceTime(issuer.clone());
+        let ttl = get_ttl_lifetime(env);
+        env.storage().persistent().set(&key, &timestamp);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Retrieve the last attestation issuance timestamp for an issuer, or `None` if never issued.
+    pub fn get_last_issuance_time(env: &Env, issuer: &Address) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::LastIssuanceTime(issuer.clone()))
     }
 }
 
