@@ -13,8 +13,9 @@ use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Bytes, En
 use crate::events::Events;
 use crate::storage::Storage;
 use crate::types::{
-    Attestation, AttestationStatus, ClaimTypeInfo, ContractMetadata, Endorsement, Error, FeeConfig,
-    GlobalStats, IssuerMetadata, MultiSigProposal, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
+    Attestation, AttestationOrigin, AttestationStatus, ClaimTypeInfo, ContractMetadata, Endorsement,
+    Error, FeeConfig, GlobalStats, IssuerMetadata, MultiSigProposal, TtlConfig,
+    MULTISIG_PROPOSAL_TTL_SECS,
 };
 use crate::validation::Validation;
 
@@ -373,8 +374,7 @@ impl TrustLinkContract {
             revoked: false,
             metadata,
             valid_from: None,
-            imported: false,
-            bridged: false,
+            origin: AttestationOrigin::Native,
             source_chain: None,
             source_tx: None,
             tags,
@@ -418,8 +418,7 @@ impl TrustLinkContract {
             revoked: false,
             metadata: None,
             valid_from: None,
-            imported: true,
-            bridged: false,
+            origin: AttestationOrigin::Imported,
             source_chain: None,
             source_tx: None,
             tags: None,
@@ -468,8 +467,7 @@ impl TrustLinkContract {
             revoked: false,
             metadata: None,
             valid_from: None,
-            imported: false,
-            bridged: true,
+            origin: AttestationOrigin::Bridged,
             source_chain: Some(source_chain),
             source_tx: Some(source_tx),
             tags: None,
@@ -514,8 +512,7 @@ impl TrustLinkContract {
                 revoked: false,
                 metadata: None,
                 valid_from: None,
-                imported: false,
-                bridged: false,
+                origin: AttestationOrigin::Native,
                 source_chain: None,
                 source_tx: None,
                 tags: None,
@@ -1062,8 +1059,7 @@ impl TrustLinkContract {
                 revoked: false,
                 metadata: None,
                 valid_from: None,
-                imported: false,
-                bridged: false,
+                origin: AttestationOrigin::Native,
                 source_chain: None,
                 source_tx: None,
                 tags: None,

@@ -6,6 +6,8 @@ use soroban_sdk::{
     Address, Env, String,
 };
 
+use crate::types::AttestationOrigin;
+
 #[contract]
 struct MockBridgeContract;
 
@@ -180,7 +182,7 @@ fn test_fee_is_disabled_by_default() {
     assert_eq!(fee_config.fee_token, None);
 
     let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
-    assert!(!client.get_attestation(&id).imported);
+    assert_eq!(client.get_attestation(&id).origin, AttestationOrigin::Native);
 }
 
 #[test]
@@ -199,7 +201,7 @@ fn test_create_attestation_sets_imported_false() {
     assert_eq!(attestation.subject, subject);
     assert_eq!(attestation.issuer, issuer);
     assert_eq!(attestation.metadata, metadata);
-    assert!(!attestation.imported);
+    assert_eq!(attestation.origin, AttestationOrigin::Native);
     assert_eq!(attestation.valid_from, None);
 }
 
@@ -446,7 +448,7 @@ fn test_import_attestation_preserves_historical_timestamp_and_marks_imported() {
     assert_eq!(attestation.timestamp, historical_timestamp);
     assert_eq!(attestation.expiration, Some(10_000));
     assert_eq!(attestation.metadata, None);
-    assert!(attestation.imported);
+    assert_eq!(attestation.origin, AttestationOrigin::Imported);
 }
 
 #[test]
@@ -487,8 +489,7 @@ fn test_bridge_attestation_stores_source_reference_and_marks_bridged() {
 
     let attestation = client.get_attestation(&id);
     assert_eq!(attestation.issuer, bridge);
-    assert!(attestation.bridged);
-    assert!(!attestation.imported);
+    assert_eq!(attestation.origin, AttestationOrigin::Bridged);
     assert_eq!(attestation.source_chain, Some(source_chain));
     assert_eq!(attestation.source_tx, Some(source_tx));
 }

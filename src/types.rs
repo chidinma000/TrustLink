@@ -60,6 +60,23 @@ pub struct GlobalStats {
     pub total_issuers: u64,
 }
 
+/// Describes how an attestation entered the system.
+///
+/// Replaces the previous `imported: bool` and `bridged: bool` fields, which
+/// were mutually exclusive and left the "native" state implicit.
+///
+/// # Variants
+/// - `Native`   — created directly by a registered issuer via `create_attestation`.
+/// - `Imported` — migrated from an external verified source by the admin via `import_attestation`.
+/// - `Bridged`  — mirrored from another chain by a trusted bridge contract via `bridge_attestation`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AttestationOrigin {
+    Native,
+    Imported,
+    Bridged,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
@@ -72,8 +89,9 @@ pub struct Attestation {
     pub revoked: bool,
     pub metadata: Option<String>,
     pub valid_from: Option<u64>,
-    pub imported: bool,
-    pub bridged: bool,
+    /// How this attestation entered the system. Replaces the former `imported`
+    /// and `bridged` boolean fields.
+    pub origin: AttestationOrigin,
     pub source_chain: Option<String>,
     pub source_tx: Option<String>,
     pub tags: Option<Vec<String>>,
