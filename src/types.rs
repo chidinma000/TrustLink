@@ -121,6 +121,14 @@ pub struct CouncilProposal {
 /// A single attestation record stored on-chain.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AttestationOrigin {
+    Native,
+    Imported,
+    Bridged,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
     pub id: String,
     pub issuer: Address,
@@ -135,8 +143,6 @@ pub struct Attestation {
     pub metadata: Option<String>,
     pub jurisdiction: Option<String>,
     pub valid_from: Option<u64>,
-    /// How this attestation entered the system. Replaces the former `imported`
-    /// and `bridged` boolean fields.
     pub origin: AttestationOrigin,
     pub source_chain: Option<String>,
     pub source_tx: Option<String>,

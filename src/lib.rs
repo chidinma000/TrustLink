@@ -11,17 +11,262 @@ mod validation;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
-use types::{AdminCouncil, Attestation, AttestationStatus, ClaimTypeInfo, ContractMetadata, CouncilOperation, CouncilProposal, Error, IssuerMetadata};
-use storage::Storage;
-use validation::Validation;
-use events::Events;
+use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, String, Vec};
 
-/// The TrustLink smart contract.
-///
-/// Provides a shared attestation infrastructure: admins manage a registry of
-/// trusted issuers, issuers create and revoke attestations, and any caller can
-/// verify claims against the registry.
+use crate::events::Events;
+use crate::storage::Storage;
+use crate::types::{
+    AdminCouncil, Attestation, AttestationOrigin, AttestationRequest, AttestationStatus, AuditAction, AuditEntry,
+    ClaimTypeInfo, ContractConfig, ContractMetadata, Endorsement, Error, FeeConfig, GlobalStats, HealthStatus,
+    IssuerMetadata, IssuerStats, IssuerTier, MultiSigProposal, RequestStatus, TtlConfig,
+    ATTESTATION_REQUEST_TTL_SECS, MULTISIG_PROPOSAL_TTL_SECS,
+};
+use crate::validation::Validation;
+
+// Seconds in one day.
+const SECS_PER_DAY: u64 = 86_400;
+
+/// Minimal interface expected on a registered callback contract.
+/// The callback receives the subject, attestation ID, and expiration timestamp.
+mod callback {
+    use soroban_sdk::{contractclient, Address, Env, String};
+
+    #[contractclient(name = "ExpirationCallbackClient")]
+    #[allow(dead_code)]
+    pub trait ExpirationCallback {
+        fn notify_expiring(env: Env, subject: Address, attestation_id: String, expiration: u64);
+    }
+}
+
+use callback::ExpirationCallbackClient;
+
+fn validate_metadata(metadata: &Option<String>) -> Result<(), Error> {
+    if let Some(value) = metadata {
+        if value.len() > 256 {
+            return Err(Error::MetadataTooLong);
+        }
+    }
+    Ok(())
+}
+
+/// Claim type must be non-empty and at most 64 characters.
+/// Only alphanumeric characters, underscores, and hyphens are allowed.
+fn validate_claim_type(claim_type: &String) -> Result<(), Error> {
+    let len = claim_type.len();
+    if len == 0 || len > 64 {
+        return Err(Error::InvalidClaimType);
+    }
+    // Copy into a fixed-size stack buffer and validate each byte.
+    let mut buf = [0u8; 64];
+    claim_type.copy_into_slice(&mut buf[..len as usize]);
+    for &byte in &buf[..len as usize] {
+        if !matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-') {
+            return Err(Error::InvalidClaimType);
+        }
+    }
+    Ok(())
+}
+
+fn validate_reason(reason: &Option<String>) -> Result<(), Error> {
+    if let Some(r) = reason {
+        if r.len() > 128 {
+            return Err(Error::ReasonTooLong);
+        }
+    }
+    Ok(())
+}
+
+fn validate_tags(tags: &Option<Vec<String>>) -> Result<(), Error> {
+    if let Some(t) = tags {
+        if t.len() > 5 {
+            return Err(Error::TooManyTags);
+        }
+        for tag in t.iter() {
+            if tag.len() > 32 {
+                return Err(Error::TagTooLong);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_jurisdiction(env: &Env, jurisdiction: &Option<String>) -> Result<(), Error> {
+    if let Some(code) = jurisdiction {
+        if code.len() != 2 {
+            return Err(Error::InvalidJurisdiction);
+        }
+
+        let valid_codes = [
+            "AF", "AX", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ", "AG", "AR", "AM", "AW", "AU", "AT", "AZ",
+            "BS", "BH", "BD", "BB", "BY", "BE", "BZ", "BJ", "BM", "BT", "BO", "BQ", "BA", "BW", "BV", "BR",
+            "IO", "BN", "BG", "BF", "BI", "CV", "KH", "CM", "CA", "KY", "CF", "TD", "CL", "CN", "CX", "CC",
+            "CO", "KM", "CG", "CD", "CK", "CR", "CI", "HR", "CU", "CW", "CY", "CZ", "DK", "DJ", "DM", "DO",
+            "EC", "EG", "SV", "GQ", "ER", "EE", "SZ", "ET", "FK", "FO", "FJ", "FI", "FR", "GF", "PF", "TF",
+            "GA", "GM", "GE", "DE", "GH", "GI", "GR", "GL", "GD", "GP", "GU", "GT", "GG", "GN", "GW", "GY",
+            "HT", "HM", "VA", "HN", "HK", "HU", "IS", "IN", "ID", "IR", "IQ", "IE", "IM", "IL", "IT", "JM",
+            "JP", "JE", "JO", "KZ", "KE", "KI", "KP", "KR", "KW", "KG", "LA", "LV", "LB", "LS", "LR", "LY",
+            "LI", "LT", "LU", "MO", "MK", "MG", "MW", "MY", "MV", "ML", "MT", "MH", "MQ", "MR", "MU", "YT",
+            "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MA", "MZ", "MM", "NA", "NR", "NP", "NL", "NC", "NZ",
+            "NI", "NE", "NG", "NU", "NF", "MP", "NO", "OM", "PK", "PW", "PS", "PA", "PG", "PY", "PE", "PH",
+            "PN", "PL", "PT", "PR", "QA", "RE", "RO", "RU", "RW", "BL", "SH", "KN", "LC", "MF", "PM", "VC",
+            "WS", "SM", "ST", "SA", "SN", "RS", "SC", "SL", "SG", "SX", "SK", "SI", "SB", "SO", "ZA", "GS",
+            "SS", "ES", "LK", "SD", "SR", "SJ", "SE", "CH", "SY", "TW", "TJ", "TZ", "TH", "TL", "TG", "TK",
+            "TO", "TT", "TN", "TR", "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU",
+            "VE", "VN", "VG", "VI", "WF", "EH", "YE", "ZM", "ZW",
+        ];
+
+        let mut valid = false;
+        for iso in valid_codes.iter() {
+            if code == &String::from_str(env, iso) {
+                valid = true;
+                break;
+            }
+        }
+
+        if !valid {
+            return Err(Error::InvalidJurisdiction);
+        }
+    }
+    Ok(())
+}
+
+fn validate_native_expiration(env: &Env, expiration: Option<u64>) -> Result<(), Error> {
+    if let Some(value) = expiration {
+        if value <= env.ledger().timestamp() {
+            return Err(Error::InvalidExpiration);
+        }
+    }
+    Ok(())
+}
+
+fn validate_import_timestamps(
+    env: &Env,
+    timestamp: u64,
+    expiration: Option<u64>,
+) -> Result<(), Error> {
+    if timestamp > env.ledger().timestamp() {
+        return Err(Error::InvalidTimestamp);
+    }
+
+    if let Some(value) = expiration {
+        if value <= timestamp {
+            return Err(Error::InvalidExpiration);
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_fee_config(env: &Env, fee: i128, fee_token: &Option<Address>) -> Result<(), Error> {
+    if fee < 0 {
+        return Err(Error::InvalidFee);
+    }
+
+    if fee > 0 && fee_token.is_none() {
+        return Err(Error::FeeTokenRequired);
+    }
+
+    // Validate that fee_token is a real token contract by attempting a balance call
+    if let Some(token_addr) = fee_token {
+        let token = TokenClient::new(&env, token_addr);
+        // Dry-run balance call to verify it's a token contract
+        let _ = token.balance(&env.current_contract_address());
+    }
+
+    Ok(())
+}
+
+fn check_rate_limit(env: &Env, issuer: &Address) -> Result<(), Error> {
+    if let Some(config) = Storage::get_rate_limit_config(env) {
+        if config.min_issuance_interval == 0 {
+            return Ok(());
+        }
+
+        let current_time = env.ledger().timestamp();
+        if let Some(last_issuance) = Storage::get_last_issuance_time(env, issuer) {
+            let elapsed = current_time.saturating_sub(last_issuance);
+            if elapsed < config.min_issuance_interval {
+                return Err(Error::RateLimited);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn default_fee_config(admin: &Address) -> FeeConfig {
+    FeeConfig {
+        attestation_fee: 0,
+        fee_collector: admin.clone(),
+        fee_token: None,
+    }
+}
+
+fn load_fee_config(env: &Env) -> Result<FeeConfig, Error> {
+    Storage::get_fee_config(env).ok_or(Error::NotInitialized)
+}
+
+fn charge_attestation_fee(env: &Env, issuer: &Address) -> Result<(), Error> {
+    let fee_config = load_fee_config(env)?;
+
+    if fee_config.attestation_fee < 0 {
+        return Err(Error::InvalidFee);
+    }
+
+    if fee_config.attestation_fee == 0 {
+        return Ok(());
+    }
+
+    let fee_token = fee_config.fee_token.ok_or(Error::FeeTokenRequired)?;
+    TokenClient::new(env, &fee_token).transfer(
+        issuer,
+        &fee_config.fee_collector,
+        &fee_config.attestation_fee,
+    );
+
+    Ok(())
+}
+
+fn store_attestation(env: &Env, attestation: &Attestation) {
+    Storage::set_attestation(env, attestation);
+    Storage::add_subject_attestation(env, &attestation.subject, &attestation.id);
+    Storage::add_issuer_attestation(env, &attestation.issuer, &attestation.id);
+
+    // Increment total_issued counter for this issuer.
+    let mut stats = Storage::get_issuer_stats(env, &attestation.issuer);
+    stats.total_issued += 1;
+    Storage::set_issuer_stats(env, &attestation.issuer, &stats);
+
+    // Increment global total_attestations counter.
+    Storage::increment_total_attestations(env, 1);
+}
+
+/// Fire the expiration hook for `subject` if one is registered and the
+/// attestation is inside the notification window. Failures are silently
+/// swallowed so the main flow is never interrupted.
+fn maybe_trigger_expiration_hook(
+    env: &Env,
+    subject: &Address,
+    attestation_id: &String,
+    expiration: u64,
+    current_time: u64,
+) {
+    let hook = match Storage::get_expiration_hook(env, subject) {
+        Some(h) => h,
+        None => return,
+    };
+
+    let notify_window = (hook.notify_days_before as u64) * SECS_PER_DAY;
+    let notify_from = expiration.saturating_sub(notify_window);
+
+    if current_time >= notify_from && current_time < expiration {
+        Events::expiration_hook_triggered(env, subject, attestation_id, expiration);
+        // Best-effort cross-contract call — ignore any panic/error.
+        let client = ExpirationCallbackClient::new(env, &hook.callback_contract);
+        let _ = client.try_notify_expiring(subject, attestation_id, &expiration);
+    }
+}
+
 #[contract]
 pub struct TrustLinkContract;
 
