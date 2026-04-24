@@ -109,4 +109,20 @@ impl Validation {
         }
         Ok(())
     }
+
+    /// Validate optional metadata string.
+    ///
+    /// # Rules
+    /// - Maximum 256 characters.
+    ///
+    /// # Errors
+    /// - [`Error::MetadataTooLong`] — metadata exceeds 256 characters.
+    pub fn validate_metadata(_env: &Env, metadata: &Option<String>) -> Result<(), Error> {
+        if let Some(value) = metadata {
+            if value.len() > 256 {
+                return Err(Error::MetadataTooLong);
+            }
+        }
+        Ok(())
+    }
 }
