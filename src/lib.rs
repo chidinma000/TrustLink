@@ -18,8 +18,8 @@ use crate::storage::Storage;
 use crate::types::{
     AdminCouncil, Attestation, AttestationRequest, AttestationStatus, AuditAction, AuditEntry, ClaimTypeInfo,
     ContractConfig, ContractMetadata, Endorsement, Error, FeeConfig, GlobalStats, HealthStatus,
-    IssuerMetadata, IssuerStats, IssuerTier, MultiSigProposal, RequestStatus, TtlConfig,
-    ATTESTATION_REQUEST_TTL_SECS, MULTISIG_PROPOSAL_TTL_SECS,
+    IssuerMetadata, IssuerStats, IssuerTier, MultiSigProposal, RateLimitConfig, RequestStatus,
+    StorageLimits, TtlConfig, ATTESTATION_REQUEST_TTL_SECS, MULTISIG_PROPOSAL_TTL_SECS,
 };
 use crate::validation::Validation;
 
@@ -517,35 +517,6 @@ impl TrustLinkContract {
         Storage::set_whitelist_mode(&env, &issuer, true);
         Events::whitelist_mode_enabled(&env, &issuer);
         Ok(())
-    }
-
-    /// Add a subject to the calling issuer's whitelist.
-    ///
-    /// # Errors
-    /// - [`Error::Unauthorized`] — caller is not a registered issuer.
-    pub fn add_to_whitelist(env: Env, issuer: Address, subject: Address) -> Result<(), Error> {
-        issuer.require_auth();
-        Validation::require_issuer(&env, &issuer)?;
-        Storage::add_to_whitelist(&env, &issuer, &subject);
-        Events::whitelist_updated(&env, &issuer, &subject, true);
-        Ok(())
-    }
-
-    /// Remove a subject from the calling issuer's whitelist.
-    ///
-    /// # Errors
-    /// - [`Error::Unauthorized`] — caller is not a registered issuer.
-    pub fn remove_from_whitelist(env: Env, issuer: Address, subject: Address) -> Result<(), Error> {
-        issuer.require_auth();
-        Validation::require_issuer(&env, &issuer)?;
-        Storage::remove_from_whitelist(&env, &issuer, &subject);
-        Events::whitelist_updated(&env, &issuer, &subject, false);
-        Ok(())
-    }
-
-    /// Return `true` if `subject` is on `issuer`'s whitelist.
-    pub fn is_whitelisted(env: Env, issuer: Address, subject: Address) -> bool {
-        Storage::is_whitelisted(&env, &issuer, &subject)
     }
 
     /// Create a new attestation about a subject address.    ///
@@ -1075,68 +1046,6 @@ impl TrustLinkContract {
         Ok(())
     }
 
-    /// Revoke multiple attestations in a single atomic call (issuer only).
-    ///
-    /// Authorization is checked once for the issuer. If any attestation does
-    /// not belong to the caller or is already revoked the entire batch is
-    /// rolled back — no partial writes occur.
-    ///
-    /// Max batch size is 50. Passing more IDs returns [`Error::BatchTooLarge`].
-    ///
-    /// Emits one `revoked` event per attestation.
-    ///
-    /// # Parameters
-    /// - `issuer` — authorized issuer (must authorize).
-    /// - `attestation_ids` — list of IDs to revoke (max 50).
-    /// - `reason` — optional human-readable reason stored in the event data.
-    ///
-    /// # Returns
-    /// Count of revoked attestations.
-    ///
-    /// # Errors
-    /// - [`Error::BatchTooLarge`] — more than 50 IDs supplied.
-    /// - [`Error::Unauthorized`] — issuer is not registered or does not own an attestation.
-    /// - [`Error::NotFound`] — an ID does not exist.
-    /// - [`Error::AlreadyRevoked`] — an attestation is already revoked.
-    pub fn revoke_attestations_batch(
-        env: Env,
-        issuer: Address,
-        attestation_ids: Vec<String>,
-        reason: Option<String>,
-    ) -> Result<u32, Error> {
-        const MAX_BATCH: u32 = 50;
-
-        issuer.require_auth();
-        Validation::require_issuer(&env, &issuer)?;
-
-        if attestation_ids.len() > MAX_BATCH {
-            return Err(Error::BatchTooLarge);
-        }
-
-        // Validate all attestations first (atomic — no partial writes)
-        for id in attestation_ids.iter() {
-            let attestation = Storage::get_attestation(&env, &id)?;
-            if attestation.issuer != issuer {
-                return Err(Error::Unauthorized);
-            }
-            if attestation.revoked {
-                return Err(Error::AlreadyRevoked);
-            }
-        }
-
-        // All checks passed — apply writes
-        let mut count: u32 = 0;
-        for id in attestation_ids.iter() {
-            let mut attestation = Storage::get_attestation(&env, &id)?;
-            attestation.revoked = true;
-            Storage::set_attestation(&env, &attestation);
-            Events::attestation_revoked_with_reason(&env, &id, &issuer, &reason);
-            count += 1;
-        }
-
-        false
-    }
-
     pub fn has_valid_claim_from_issuer(
         env: Env,
         subject: Address,
@@ -1313,7 +1222,7 @@ impl TrustLinkContract {
             }
         }
 
-        let paginated_ids = crate::storage::paginate(&env, filtered_ids, start, limit);
+        let paginated_ids = crate::storage::paginate(&env, &filtered_ids, start, limit);
         let mut result = Vec::new(&env);
 
         for id in paginated_ids.iter() {
@@ -1771,26 +1680,6 @@ impl TrustLinkContract {
         }
     }
 
-    pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        Validation::require_admin(&env, &admin)?;
-        Storage::set_paused(&env, true);
-        Events::contract_paused(&env, &admin);
-        Ok(())
-    }
-
-    pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
-        admin.require_auth();
-        Validation::require_admin(&env, &admin)?;
-        Storage::set_paused(&env, false);
-        Events::contract_unpaused(&env, &admin);
-        Ok(())
-    }
-
-    pub fn is_paused(env: Env) -> bool {
-        Storage::is_paused(&env)
-    }
-
     pub fn get_contract_metadata(env: Env) -> Result<ContractMetadata, Error> {
         let version = Storage::get_version(&env).ok_or(Error::NotInitialized)?;
         Ok(ContractMetadata {
@@ -1876,10 +1765,7 @@ impl TrustLinkContract {
                 action: AuditAction::Transferred,
                 actor: admin.clone(),
                 timestamp,
-                details: Some(format!(
-                    "{}",
-                    new_issuer.to_string()
-                )),
+                details: Some(new_issuer.to_string()),
             },
         );
 
