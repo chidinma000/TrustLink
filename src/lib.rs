@@ -701,12 +701,12 @@ impl TrustLinkContract {
             source_tx: None,
             tags,
             revocation_reason: None,
-            deleted: false,
         };
 
-        // Store attestation state BEFORE calling external token contract (reentrancy guard)
+        // CHECKS-EFFECTS-INTERACTIONS: persist all state BEFORE calling the
+        // external token contract so a re-entrant call sees a fully-committed
+        // attestation and is blocked by the duplicate-ID guard.
         store_attestation(env, &attestation);
-        Events::attestation_created(env, &attestation);
         Storage::append_audit_entry(
             env,
             &attestation_id,
@@ -717,12 +717,10 @@ impl TrustLinkContract {
                 details: None,
             },
         );
-
-        // Charge fee after state is persisted (reentrancy guard)
-        charge_attestation_fee(env, &issuer)?;
-
-        // Record last issuance time for rate limiting
         Storage::set_last_issuance_time(env, &issuer, timestamp);
+
+        // INTERACTION: call external token contract after state is fully persisted.
+        charge_attestation_fee(env, &issuer)?;
 
         Events::attestation_created(env, &attestation);
         Ok(attestation_id)
