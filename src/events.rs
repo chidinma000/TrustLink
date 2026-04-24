@@ -332,5 +332,22 @@ impl Events {
             subject.clone(),
         );
     }
+
+    /// Emitted when an attestation is transferred from one issuer to another.
+    ///
+    /// **Event Schema:**
+    /// - **Topics:** `("att_xfer", old_issuer: Address)`
+    /// - **Data:** `(attestation_id: String, new_issuer: Address)`
+    pub fn attestation_transferred(
+        env: &Env,
+        attestation_id: &String,
+        old_issuer: &Address,
+        new_issuer: &Address,
+    ) {
+        env.events().publish(
+            (symbol_short!("att_xfer"), old_issuer.clone()),
+            (attestation_id.clone(), new_issuer.clone()),
+        );
+    }
 }
 
