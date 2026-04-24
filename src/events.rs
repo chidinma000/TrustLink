@@ -1,6 +1,6 @@
 use soroban_sdk::{symbol_short, Address, Env, String};
 
-use crate::types::{Attestation, IssuerTier, Address};
+use crate::types::{Attestation, IssuerTier};
 
 pub struct Events;
 
@@ -90,18 +90,6 @@ impl Events {
             (attestation_id.clone(), new_expiration),
         );
     }
-
-    pub fn deletion_requested(
-    env: &Env,
-    subject: &Address,
-    attestation_id: &String,
-    timestamp: u64,
-) {
-    env.events().publish(
-        (symbol_short!("del_req"), subject.clone()),
-        (attestation_id.clone(), timestamp),
-    );
-}
 
     pub fn attestation_expired(env: &Env, attestation_id: &String, subject: &Address) {
         env.events().publish(
@@ -226,16 +214,16 @@ impl Events {
     /// Emitted when the admin pauses the contract.
     pub fn contract_paused(env: &Env, admin: &Address, timestamp: u64) {
         env.events()
-            .publish((symbol_short!("paused"),), (admin.clone(), timestamp));
+            .publish((symbol_short!("paused"), admin.clone()), timestamp);
     }
 
     /// Emitted when the admin unpauses the contract.
     pub fn contract_unpaused(env: &Env, admin: &Address, timestamp: u64) {
         env.events()
-            .publish((symbol_short!("unpaused"),), (admin.clone(), timestamp));
+            .publish((symbol_short!("unpaused"), admin.clone()), timestamp);
     }
 
-    /// Emitted when a subject requests 94 of their attestation.
+    /// Emitted when a subject requests deletion of their attestation.
     pub fn deletion_requested(env: &Env, subject: &Address, attestation_id: &String, timestamp: u64) {
         env.events().publish(
             (symbol_short!("del_req"), subject.clone()),
