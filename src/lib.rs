@@ -1345,6 +1345,11 @@ impl TrustLinkContract {
         )
     }
 
+    /// Returns the total number of attestations created by `issuer` from the issuer index.
+    pub fn get_issuer_attestation_count(env: Env, issuer: Address) -> u32 {
+        Storage::get_issuer_attestations(&env, &issuer).len()
+    }
+
     pub fn get_valid_claims(env: Env, subject: Address) -> Vec<String> {
         let current_time = env.ledger().timestamp();
         let mut result = Vec::new(&env);
