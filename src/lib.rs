@@ -402,6 +402,36 @@ impl TrustLinkContract {
         Storage::get_issuer_tier(&env, &issuer)
     }
 
+    /// Admin-facing alias for `update_issuer_tier`.
+    pub fn set_issuer_tier(
+        env: Env,
+        admin: Address,
+        issuer: Address,
+        tier: IssuerTier,
+    ) -> Result<(), Error> {
+        Self::update_issuer_tier(env, admin, issuer, tier)
+    }
+
+    /// Return a confidence score (0–100) for an attestation based on the
+    /// issuer's tier.
+    ///
+    /// | Tier    | Score |
+    /// |---------|-------|
+    /// | Basic   |    50 |
+    /// | Verified|    75 |
+    /// | Premium |   100 |
+    ///
+    /// Returns `None` if the attestation does not exist.
+    pub fn get_confidence_score(env: Env, attestation_id: String) -> Option<u32> {
+        let attestation = Storage::get_attestation(&env, &attestation_id).ok()?;
+        let score = match Storage::get_issuer_tier(&env, &attestation.issuer) {
+            Some(IssuerTier::Premium) => 100,
+            Some(IssuerTier::Verified) => 75,
+            _ => 50, // Basic or unset
+        };
+        Some(score)
+    }
+
     /// Return `true` if `subject` holds a valid `claim_type` attestation issued
     /// by an issuer whose tier is >= `min_tier`.
     pub fn has_valid_claim_from_tier(
@@ -1453,6 +1483,38 @@ impl TrustLinkContract {
     ) -> Result<String, Error> {
         proposer.require_auth();
         Validation::require_issuer(&env, &proposer)?;
+
+        // Premium issuers bypass multi-sig for ACCREDITED_INVESTOR (#305).
+        let accredited = String::from_str(&env, "ACCREDITED_INVESTOR");
+        if claim_type == accredited {
+            if let Some(IssuerTier::Premium) = Storage::get_issuer_tier(&env, &proposer) {
+                let timestamp = env.ledger().timestamp();
+                let attestation_id =
+                    Attestation::generate_id(&env, &proposer, &subject, &claim_type, timestamp);
+                let attestation = Attestation {
+                    id: attestation_id.clone(),
+                    issuer: proposer.clone(),
+                    subject: subject.clone(),
+                    claim_type: claim_type.clone(),
+                    timestamp,
+                    expiration: None,
+                    revoked: false,
+                    metadata: None,
+                    jurisdiction: None,
+                    valid_from: None,
+                    imported: false,
+                    bridged: false,
+                    source_chain: None,
+                    source_tx: None,
+                    tags: None,
+                    revocation_reason: None,
+                    deleted: false,
+                };
+                store_attestation(&env, &attestation);
+                Events::attestation_created(&env, &attestation);
+                return Ok(attestation_id);
+            }
+        }
 
         // Validate all required signers are registered issuers.
         for signer in required_signers.iter() {
