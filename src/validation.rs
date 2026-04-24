@@ -77,7 +77,7 @@ impl Validation {
     /// - [`Error::InvalidClaimType`] — length exceeds 64 or contains disallowed characters.
     pub fn validate_claim_type(claim_type: &String) -> Result<(), Error> {
         let len = claim_type.len();
-        if len > 64 {
+        if len == 0 || len > 64 {
             return Err(Error::InvalidClaimType);
         }
         // Copy bytes out of the host-side String for inspection.

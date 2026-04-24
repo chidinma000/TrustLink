@@ -676,14 +676,6 @@ impl TrustLinkContract {
             return Err(Error::SubjectNotWhitelisted);
         }
 
-        // Generate deterministic ID from attestation data
-
-        // Validate claim_type length (enforce max 64 characters)
-        let claim_type_len = claim_type.len();
-        if claim_type_len > 64 {
-            return Err(Error::InvalidClaimType);
-        }
-
         let attestation = Attestation {
             id: attestation_id.clone(),
             issuer: issuer.clone(),
@@ -1601,7 +1593,7 @@ impl TrustLinkContract {
     ) -> Result<(), Error> {
         admin.require_auth();
         Validation::require_admin(&env, &admin)?;
-        validate_claim_type(&claim_type)?;
+        Validation::validate_claim_type(&claim_type)?;
 
         let info = ClaimTypeInfo {
             claim_type: claim_type.clone(),
