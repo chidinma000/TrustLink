@@ -462,39 +462,62 @@ impl TrustLinkContract {
         Ok(())
     }
 
-    /// Check if an address has a valid attestation of a given type
-    /// Revoke multiple attestations in a single call (issuer only).
-    /// Auth is checked once for the issuer. Each attestation is validated
-    /// individually — if any attestation does not belong to the caller or is
-    /// already revoked the corresponding error is returned immediately and no
-    /// further attestations are processed.
-    /// Returns the count of successfully revoked attestations.
+    /// Revoke multiple attestations in a single atomic call (issuer only).
+    ///
+    /// Authorization is checked once for the issuer. If any attestation does
+    /// not belong to the caller or is already revoked the entire batch is
+    /// rolled back — no partial writes occur.
+    ///
+    /// Max batch size is 50. Passing more IDs returns [`Error::BatchTooLarge`].
+    ///
+    /// Emits one `revoked` event per attestation.
+    ///
+    /// # Parameters
+    /// - `issuer` — authorized issuer (must authorize).
+    /// - `attestation_ids` — list of IDs to revoke (max 50).
+    /// - `reason` — optional human-readable reason stored in the event data.
+    ///
+    /// # Returns
+    /// Count of revoked attestations.
+    ///
+    /// # Errors
+    /// - [`Error::BatchTooLarge`] — more than 50 IDs supplied.
+    /// - [`Error::Unauthorized`] — issuer is not registered or does not own an attestation.
+    /// - [`Error::NotFound`] — an ID does not exist.
+    /// - [`Error::AlreadyRevoked`] — an attestation is already revoked.
     pub fn revoke_attestations_batch(
         env: Env,
         issuer: Address,
         attestation_ids: Vec<String>,
+        reason: Option<String>,
     ) -> Result<u32, Error> {
-        // Single auth check for the entire batch
+        const MAX_BATCH: u32 = 50;
+
         issuer.require_auth();
         Validation::require_issuer(&env, &issuer)?;
 
-        let mut count: u32 = 0;
+        if attestation_ids.len() > MAX_BATCH {
+            return Err(Error::BatchTooLarge);
+        }
 
+        // Validate all attestations first (atomic — no partial writes)
         for id in attestation_ids.iter() {
-            let mut attestation = Storage::get_attestation(&env, &id)?;
-
+            let attestation = Storage::get_attestation(&env, &id)?;
             if attestation.issuer != issuer {
                 return Err(Error::Unauthorized);
             }
-
             if attestation.revoked {
                 return Err(Error::AlreadyRevoked);
             }
+        }
 
+        // All checks passed — apply writes
+        let mut count: u32 = 0;
+        for id in attestation_ids.iter() {
+            let mut attestation = Storage::get_attestation(&env, &id)?;
             attestation.revoked = true;
             Storage::set_attestation(&env, &attestation);
-            Events::attestation_revoked(&env, &id, &issuer);
-
+            Events::attestation_revoked_with_reason(&env, &id, &issuer, &reason);
             count += 1;
         }
 

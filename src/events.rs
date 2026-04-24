@@ -47,6 +47,13 @@ impl Events {
         );
     }
 
+    pub fn attestation_revoked_with_reason(env: &Env, attestation_id: &String, issuer: &Address, reason: &Option<String>) {
+        env.events().publish(
+            (symbol_short!("revoked"), issuer.clone()),
+            (attestation_id.clone(), reason.clone()),
+        );
+    }
+
     pub fn attestation_renewed(env: &Env, attestation_id: &String, issuer: &Address, new_expiration: Option<u64>) {
         env.events().publish(
             (symbol_short!("renewed"), issuer.clone()),
