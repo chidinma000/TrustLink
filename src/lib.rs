@@ -1827,9 +1827,68 @@ impl TrustLinkContract {
         Ok(())
     }
 
-    /// Return the current multisig proposal TTL in days (default 7).
-    pub fn get_multisig_ttl(env: Env) -> u32 {
-        Storage::get_multisig_ttl_days(&env)
+    /// Compute a confidence score (0–100) for an attestation.
+    ///
+    /// The score is derived from four factors:
+    ///
+    /// | Factor | Points |
+    /// |--------|--------|
+    /// | Issuer tier: Basic | 20 |
+    /// | Issuer tier: Verified | 35 |
+    /// | Issuer tier: Premium | 50 |
+    /// | Each endorsement (up to 3) | +10 each (max 30) |
+    /// | Multi-sig approved | +15 |
+    /// | Age bonus: ≥ 30 days old | +5 |
+    ///
+    /// Maximum possible score: 100 (50 + 30 + 15 + 5).
+    ///
+    /// Returns `0` if the attestation does not exist.
+    pub fn get_confidence_score(env: Env, attestation_id: String) -> u32 {
+        let attestation = match Storage::get_attestation(&env, &attestation_id) {
+            Ok(a) => a,
+            Err(_) => return 0,
+        };
+
+        let mut score: u32 = 0;
+
+        // Factor 1: Issuer tier
+        let tier_points = match Storage::get_issuer_tier(&env, &attestation.issuer) {
+            Some(IssuerTier::Premium) => 50,
+            Some(IssuerTier::Verified) => 35,
+            Some(IssuerTier::Basic) | None => 20,
+        };
+        score += tier_points;
+
+        // Factor 2: Endorsements (up to 3, +10 each)
+        let endorsement_count = Storage::get_endorsements(&env, &attestation_id).len();
+        let endorsement_points = (endorsement_count.min(3)) * 10;
+        score += endorsement_points;
+
+        // Factor 3: Multi-sig approved (+15)
+        // A multi-sig approved attestation is one whose ID matches a finalized proposal.
+        // We detect this by checking if a proposal with the same proposer/subject/claim_type
+        // was finalized at the attestation's timestamp.
+        let proposal_id = MultiSigProposal::generate_id(
+            &env,
+            &attestation.issuer,
+            &attestation.subject,
+            &attestation.claim_type,
+            attestation.timestamp,
+        );
+        if let Ok(proposal) = Storage::get_multisig_proposal(&env, &proposal_id) {
+            if proposal.finalized {
+                score += 15;
+            }
+        }
+
+        // Factor 4: Age bonus — attestation is at least 30 days old (+5)
+        let current_time = env.ledger().timestamp();
+        let age_secs = current_time.saturating_sub(attestation.timestamp);
+        if age_secs >= 30 * SECS_PER_DAY {
+            score += 5;
+        }
+
+        score.min(100)
     }
 }
 
