@@ -53,4 +53,6 @@ pub enum Error {
     LastAdminCannotBeRemoved = 29,
     /// Issuer is rate-limited and must wait before creating another attestation.
     RateLimited = 30,
+    /// The provided fee_token address does not implement the token interface.
+    InvalidFeeToken = 31,
 }

@@ -175,11 +175,14 @@ fn validate_fee_config(env: &Env, fee: i128, fee_token: &Option<Address>) -> Res
         return Err(Error::FeeTokenRequired);
     }
 
-    // Validate that fee_token is a real token contract by attempting a balance call
+    // Validate that fee_token is a real token contract by attempting a balance call.
+    // Using try_balance (non-panicking) so a non-token address returns InvalidFeeToken
+    // instead of causing a runtime panic inside create_attestation.
     if let Some(token_addr) = fee_token {
-        let token = TokenClient::new(&env, token_addr);
-        // Dry-run balance call to verify it's a token contract
-        let _ = token.balance(&env.current_contract_address());
+        let token = TokenClient::new(env, token_addr);
+        token
+            .try_balance(&env.current_contract_address())
+            .map_err(|_| Error::InvalidFeeToken)?;
     }
 
     Ok(())
