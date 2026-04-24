@@ -49,6 +49,8 @@ pub enum StorageKey {
     ClaimType(String),
     /// Ordered list of registered claim type identifiers.
     ClaimTypeList,
+    /// Admin-configured multisig proposal TTL in days (default 7).
+    MultisigTtlDays,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -216,5 +218,20 @@ impl Storage {
             .persistent()
             .get(&StorageKey::ClaimTypeList)
             .unwrap_or(Vec::new(env))
+    }
+
+    /// Persist the multisig proposal TTL in days.
+    pub fn set_multisig_ttl_days(env: &Env, days: u32) {
+        let key = StorageKey::MultisigTtlDays;
+        env.storage().instance().set(&key, &days);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+    }
+
+    /// Return the multisig proposal TTL in days (default 7).
+    pub fn get_multisig_ttl_days(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&StorageKey::MultisigTtlDays)
+            .unwrap_or(7u32)
     }
 }

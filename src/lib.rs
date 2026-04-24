@@ -1005,4 +1005,32 @@ impl TrustLinkContract {
             ),
         })
     }
+
+    /// Set the multisig proposal TTL (admin only).
+    ///
+    /// Controls how long (in days) a multisig proposal remains open for
+    /// approval before it expires. Defaults to 7 days if never set.
+    ///
+    /// # Parameters
+    /// - `admin` — current administrator address (must authorize).
+    /// - `days` — TTL in days; must be ≥ 1.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract has not been initialized.
+    /// - [`Error::Unauthorized`] — `admin` is not the registered administrator.
+    /// - [`Error::InvalidExpiration`] — `days` is 0.
+    pub fn set_multisig_ttl(env: Env, admin: Address, days: u32) -> Result<(), Error> {
+        admin.require_auth();
+        Validation::require_admin(&env, &admin)?;
+        if days == 0 {
+            return Err(Error::InvalidExpiration);
+        }
+        Storage::set_multisig_ttl_days(&env, days);
+        Ok(())
+    }
+
+    /// Return the current multisig proposal TTL in days (default 7).
+    pub fn get_multisig_ttl(env: Env) -> u32 {
+        Storage::get_multisig_ttl_days(&env)
+    }
 }
