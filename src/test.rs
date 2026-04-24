@@ -3373,3 +3373,61 @@ fn test_whitelist_check_before_storage_write() {
     // This must panic — no attestation should be stored
     client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
 }
+
+#[test]
+fn test_rate_limit_blocks_issuer_issuing_too_fast() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    // Set a 60-second minimum interval between issuances.
+    client.set_rate_limit(&admin, &60u64);
+
+    // First attestation succeeds.
+    client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+
+    // Second attempt at the same timestamp is blocked.
+    let subject2 = Address::generate(&env);
+    let result = client.try_create_attestation(&issuer, &subject2, &claim_type, &None, &None, &None);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_rate_limit_allows_after_interval() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    client.set_rate_limit(&admin, &60u64);
+    client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+
+    // Advance ledger time past the interval.
+    env.ledger().with_mut(|l| l.timestamp += 61);
+
+    let subject2 = Address::generate(&env);
+    // Should succeed now.
+    client.create_attestation(&issuer, &subject2, &claim_type, &None, &None, &None);
+}
+
+#[test]
+fn test_rate_limit_zero_interval_disables_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer, client) = setup(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    // Interval of 0 means no rate limiting.
+    client.set_rate_limit(&admin, &0u64);
+
+    for _ in 0..3u32 {
+        let subject = Address::generate(&env);
+        client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    }
+}
