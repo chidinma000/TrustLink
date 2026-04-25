@@ -141,3 +141,65 @@ export async function revokeAttestation(
 ): Promise<void> {
   return invoke(issuer, "revoke_attestation", addr(issuer), str(attestationId), optStr(reason));
 }
+
+// ── attestation requests ─────────────────────────────────────────────────────
+
+export interface AttestationRequest {
+  id: string;
+  subject: string;
+  issuer: string;
+  claim_type: string;
+  status: "pending" | "fulfilled" | "rejected";
+  created_at: bigint;
+  fulfilled_at: bigint | null;
+}
+
+export async function submitAttestationRequest(
+  subject: string,
+  issuer: string,
+  claimType: string
+): Promise<void> {
+  return invoke(
+    subject,
+    "submit_attestation_request",
+    addr(subject),
+    addr(issuer),
+    str(claimType)
+  );
+}
+
+export async function getSubjectRequests(subject: string): Promise<AttestationRequest[]> {
+  return simulate("get_subject_requests", addr(subject), nativeToScVal(0, { type: "u32" }), nativeToScVal(50, { type: "u32" }));
+}
+
+export async function getIssuerRequests(issuer: string): Promise<AttestationRequest[]> {
+  return simulate("get_issuer_requests", addr(issuer), nativeToScVal(0, { type: "u32" }), nativeToScVal(50, { type: "u32" }));
+}
+
+export async function fulfillRequest(
+  issuer: string,
+  requestId: string,
+  expiration: bigint | null
+): Promise<void> {
+  return invoke(
+    issuer,
+    "fulfill_request",
+    addr(issuer),
+    str(requestId),
+    optU64(expiration)
+  );
+}
+
+export async function rejectRequest(
+  issuer: string,
+  requestId: string,
+  reason: string | null
+): Promise<void> {
+  return invoke(
+    issuer,
+    "reject_request",
+    addr(issuer),
+    str(requestId),
+    optStr(reason)
+  );
+}
