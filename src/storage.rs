@@ -68,34 +68,8 @@ pub enum StorageKey {
     IssuerWhitelistMode(Address),
     /// Whether a subject is whitelisted for a specific issuer.
     IssuerWhitelist(Address, Address),
-    /// Global contract statistics.
-    GlobalStats,
-    /// Per-issuer statistics.
-    IssuerStats(Address),
-    /// Issuer trust tier.
-    IssuerTier(Address),
-    /// Audit log for an attestation.
-    AuditLog(String),
-    /// Endorsements for an attestation.
-    Endorsements(String),
-    /// Expiration hook for a subject.
-    ExpirationHook(Address),
-    /// Multi-sig proposal.
-    MultiSigProposal(String),
-    /// Attestation request.
-    AttestationRequest(String),
-    /// Pending request IDs for an issuer.
-    PendingRequests(Address),
-    /// Rate limit config.
-    RateLimitConfig,
-    /// Last issuance timestamp for an issuer.
-    LastIssuanceTime(Address),
-    /// Storage limits.
-    StorageLimits,
-    /// Contract paused flag.
-    Paused,
-    /// Delegation key (delegator, delegate, claim_type).
-    Delegation(Address, Address, String),
+    /// Configurable storage exhaustion limits.
+    Limits,
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -627,9 +601,29 @@ impl Storage {
         env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 
-    // ── Endorsements ──────────────────────────────────────────────────────────
-
+    /// Return the ordered list of endorsements for `attestation_id`, or an empty [`Vec`] if none.
     pub fn get_endorsements(env: &Env, attestation_id: &String) -> Vec<Endorsement> {
+        let key = StorageKey::Endorsements(attestation_id.clone());
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env))
+    }
+
+    /// Append `endorsement` to the endorsements list for its attestation and refresh TTL.
+    pub fn add_endorsement(env: &Env, endorsement: &Endorsement) {
+        let key = StorageKey::Endorsements(endorsement.attestation_id.clone());
+        let ttl = get_ttl_lifetime(env);
+        let mut endorsements = Self::get_endorsements(env, &endorsement.attestation_id);
+        endorsements.push_back(endorsement.clone());
+        env.storage().persistent().set(&key, &endorsements);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Return `true` if the contract is currently paused.
+    ///
+    /// Defaults to `false` (not paused) when the key is absent.
+    pub fn is_paused(env: &Env) -> bool {
         env.storage()
             .persistent()
             .get(&StorageKey::Endorsements(attestation_id.clone()))
@@ -814,5 +808,17 @@ where
             result.push_back(item);
         }
     }
-    result
+
+    /// Persist storage exhaustion limits.
+    pub fn set_limits(env: &Env, limits: &StorageLimits) {
+        env.storage().instance().set(&StorageKey::Limits, limits);
+    }
+
+    /// Return the current storage limits, falling back to [`StorageLimits::default`] if not set.
+    pub fn get_limits(env: &Env) -> StorageLimits {
+        env.storage()
+            .instance()
+            .get(&StorageKey::Limits)
+            .unwrap_or_default()
+    }
 }

@@ -1015,7 +1015,13 @@ impl TrustLinkContract {
         false
     }
 
-    #[must_use]
+    /// Returns `true` only if the subject holds a valid attestation for **every**
+    /// claim type in `claim_types`.
+    ///
+    /// # Behaviour (verified against spec in issue #309)
+    /// - AND-logic: short-circuits and returns `false` on the first unsatisfied claim.
+    /// - Empty `claim_types` list returns `true` (vacuous truth).
+    /// - Revoked, expired, pending, and deleted attestations are excluded.
     pub fn has_all_claims(env: Env, subject: Address, claim_types: Vec<String>) -> bool {
         if claim_types.is_empty() { return true; }
         let attestation_ids = Storage::get_subject_attestations(&env, &subject);
