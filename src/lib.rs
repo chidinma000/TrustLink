@@ -313,32 +313,6 @@ impl TrustLinkContract {
     /// Update the trust tier of an already-registered issuer.
     ///
     /// # Errors
-    /// - [`Error::Unauthorized`] — `issuer` is not registered.
-    pub fn update_issuer_tier(
-        env: Env,
-        admin: Address,
-        issuer: Address,
-        tier: IssuerTier,
-    ) -> Result<(), Error> {
-        admin.require_auth();
-        Validation::require_admin(&env, &admin)?;
-        Validation::require_issuer(&env, &issuer)?;
-        Storage::set_issuer_tier(&env, &issuer, &tier);
-        Events::issuer_tier_updated(&env, &issuer, &tier);
-        Ok(())
-    }
-
-    /// Return the trust tier of `issuer`, or `None` if not registered.
-    #[must_use]
-    pub fn get_issuer_tier(env: Env, issuer: Address) -> Option<IssuerTier> {
-        Storage::get_issuer_tier(&env, &issuer)
-    }
-
-    /// Set the trust tier of a registered issuer (admin only).
-    ///
-    /// Alias for `update_issuer_tier` using the name specified in the issue.
-    ///
-    /// # Errors
     /// - [`Error::Unauthorized`] — caller is not admin, or `issuer` is not registered.
     pub fn set_issuer_tier(
         env: Env,
@@ -372,6 +346,36 @@ impl TrustLinkContract {
         let endorsement_bonus = (endorsement_count * 2).min(10);
 
         Some((tier_score + endorsement_bonus).min(100))
+    }
+
+    /// Admin-facing alias for `update_issuer_tier`.
+    pub fn set_issuer_tier(
+        env: Env,
+        admin: Address,
+        issuer: Address,
+        tier: IssuerTier,
+    ) -> Result<(), Error> {
+        Self::update_issuer_tier(env, admin, issuer, tier)
+    }
+
+    /// Return a confidence score (0–100) for an attestation based on the
+    /// issuer's tier.
+    ///
+    /// | Tier    | Score |
+    /// |---------|-------|
+    /// | Basic   |    50 |
+    /// | Verified|    75 |
+    /// | Premium |   100 |
+    ///
+    /// Returns `None` if the attestation does not exist.
+    pub fn get_confidence_score(env: Env, attestation_id: String) -> Option<u32> {
+        let attestation = Storage::get_attestation(&env, &attestation_id).ok()?;
+        let score = match Storage::get_issuer_tier(&env, &attestation.issuer) {
+            Some(IssuerTier::Premium) => 100,
+            Some(IssuerTier::Verified) => 75,
+            _ => 50, // Basic or unset
+        };
+        Some(score)
     }
 
     /// Return `true` if `subject` holds a valid `claim_type` attestation issued
@@ -1126,38 +1130,6 @@ impl TrustLinkContract {
         Ok(count)
     }
 
-    pub fn has_valid_claim(env: Env, subject: Address, claim_type: String) -> bool {
-        let attestation_ids = Storage::get_subject_attestations(&env, &subject);
-        let current_time = env.ledger().timestamp();
-
-        for attestation_id in attestation_ids.iter() {
-            if let Ok(attestation) = Storage::get_attestation(&env, &attestation_id) {
-                if attestation.deleted || attestation.claim_type != claim_type {
-                    continue;
-                }
-                match attestation.get_status(current_time) {
-                    AttestationStatus::Valid => {
-                        if let Some(expiration) = attestation.expiration {
-                            maybe_trigger_expiration_hook(
-                                &env,
-                                &subject,
-                                &attestation_id,
-                                expiration,
-                                current_time,
-                            );
-                        }
-                        return true;
-                    }
-                    AttestationStatus::Expired => {
-                        Events::attestation_expired(&env, &attestation_id, &subject);
-                    }
-                    AttestationStatus::Revoked | AttestationStatus::Pending => {}
-                }
-            }
-        }
-        false
-    }
-
     pub fn has_valid_claim_from_issuer(
         env: Env,
         subject: Address,
@@ -1583,41 +1555,36 @@ impl TrustLinkContract {
         proposer.require_auth();
         Validation::require_issuer(&env, &proposer)?;
 
-        // Premium issuers bypass multi-sig for ACCREDITED_INVESTOR claims.
-        let is_accredited = claim_type == String::from_str(&env, "ACCREDITED_INVESTOR");
-        let is_premium = matches!(
-            Storage::get_issuer_tier(&env, &proposer),
-            Some(IssuerTier::Premium)
-        );
-        if is_accredited && is_premium {
-            let timestamp = env.ledger().timestamp();
-            let attestation_id =
-                Attestation::generate_id(&env, &proposer, &subject, &claim_type, timestamp);
-            if Storage::has_attestation(&env, &attestation_id) {
-                return Err(Error::DuplicateAttestation);
+        // Premium issuers bypass multi-sig for ACCREDITED_INVESTOR (#305).
+        let accredited = String::from_str(&env, "ACCREDITED_INVESTOR");
+        if claim_type == accredited {
+            if let Some(IssuerTier::Premium) = Storage::get_issuer_tier(&env, &proposer) {
+                let timestamp = env.ledger().timestamp();
+                let attestation_id =
+                    Attestation::generate_id(&env, &proposer, &subject, &claim_type, timestamp);
+                let attestation = Attestation {
+                    id: attestation_id.clone(),
+                    issuer: proposer.clone(),
+                    subject: subject.clone(),
+                    claim_type: claim_type.clone(),
+                    timestamp,
+                    expiration: None,
+                    revoked: false,
+                    metadata: None,
+                    jurisdiction: None,
+                    valid_from: None,
+                    imported: false,
+                    bridged: false,
+                    source_chain: None,
+                    source_tx: None,
+                    tags: None,
+                    revocation_reason: None,
+                    deleted: false,
+                };
+                store_attestation(&env, &attestation);
+                Events::attestation_created(&env, &attestation);
+                return Ok(attestation_id);
             }
-            let attestation = Attestation {
-                id: attestation_id.clone(),
-                issuer: proposer.clone(),
-                subject,
-                claim_type,
-                timestamp,
-                expiration: None,
-                revoked: false,
-                metadata: None,
-                jurisdiction: None,
-                valid_from: None,
-                imported: false,
-                bridged: false,
-                source_chain: None,
-                source_tx: None,
-                tags: None,
-                revocation_reason: None,
-                deleted: false,
-            };
-            store_attestation(&env, &attestation);
-            Events::attestation_created(&env, &attestation);
-            return Ok(attestation_id);
         }
 
         // Validate all required signers are registered issuers.
@@ -1855,51 +1822,16 @@ impl TrustLinkContract {
         validate_reason(&reason)?;
         let mut request = Storage::get_attestation_request(&env, &request_id)?;
 
-        if request.issuer != issuer {
-            return Err(Error::Unauthorized);
-        }
-        if request.status != RequestStatus::Pending {
-            return Err(Error::RequestAlreadyProcessed);
-        }
-
-        request.status = RequestStatus::Rejected;
-        request.rejection_reason = reason.clone();
-        Storage::set_attestation_request(&env, &request);
-        Storage::remove_issuer_pending_request(&env, &issuer, &request_id);
-        Events::request_rejected(&env, &request_id, &issuer, &reason);
-        Ok(())
-    }
-
-    /// Return a paginated list of pending (non-expired) request IDs for `issuer`.
-    pub fn get_pending_requests(
-        env: Env,
-        issuer: Address,
-        start: u32,
-        limit: u32,
-    ) -> Vec<String> {
-        let current_time = env.ledger().timestamp();
-        let all_ids = Storage::get_issuer_pending_requests(&env, &issuer);
-        // Filter to only truly pending (not expired) requests.
-        let mut pending = Vec::new(&env);
-        for id in all_ids.iter() {
-            if let Ok(req) = Storage::get_attestation_request(&env, &id) {
-                if req.status == RequestStatus::Pending && current_time < req.expires_at {
-                    pending.push_back(id);
-                }
-            }
-        }
-        crate::storage::paginate(&env, &pending, start, limit)
-    }
-
-    /// Retrieve a single attestation request by ID.
-    ///
-    /// # Errors
-    /// - [`Error::NotFound`] — request does not exist.
-    pub fn get_attestation_request(
-        env: Env,
-        request_id: String,
-    ) -> Result<AttestationRequest, Error> {
-        Storage::get_attestation_request(&env, &request_id)
+    pub fn get_contract_metadata(env: Env) -> Result<ContractMetadata, Error> {
+        let version = Storage::get_version(&env).ok_or(Error::NotInitialized)?;
+        Ok(ContractMetadata {
+            name: String::from_str(&env, "TrustLink"),
+            version,
+            description: String::from_str(
+                &env,
+                "On-chain attestation and verification system for the Stellar blockchain.",
+            ),
+        })
     }
 
     /// Endorse an existing attestation, adding a layer of social proof.

@@ -299,7 +299,7 @@ impl Events {
     pub fn contract_unpaused(env: &Env, admin: &Address, timestamp: u64) {
         // TOPIC_UNPAUSED
         env.events()
-            .publish((symbol_short!(TOPIC_UNPAUSED),), (admin.clone(), timestamp));
+            .publish((symbol_short!("unpaused"),), (admin.clone(), timestamp));
     }
 
     /// Emitted when a subject submits an attestation request to an issuer.
@@ -361,7 +361,7 @@ impl Events {
     ) {
         // TOPIC_DEL_CRTD
         env.events().publish(
-            (symbol_short!(TOPIC_DEL_CREATED), delegator.clone()),
+            (symbol_short!("del_crtd"), delegator.clone()),
             (delegate.clone(), claim_type.clone(), expiration),
         );
     }
@@ -375,7 +375,7 @@ impl Events {
     ) {
         // TOPIC_DEL_RVKD
         env.events().publish(
-            (symbol_short!(TOPIC_DEL_REVOKED), delegator.clone()),
+            (symbol_short!("del_rvkd"), delegator.clone()),
             (delegate.clone(), claim_type.clone()),
         );
     }
