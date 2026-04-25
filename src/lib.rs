@@ -1372,20 +1372,26 @@ impl TrustLinkContract {
         env: Env,
         subject: Address,
         jurisdiction: String,
+        start: u32,
+        limit: u32,
     ) -> Vec<String> {
         let attestation_ids = Storage::get_subject_attestations(&env, &subject);
-        let mut result = Vec::new(&env);
+        let mut filtered = Vec::new(&env);
+
         for id in attestation_ids.iter() {
             if let Ok(attestation) = Storage::get_attestation(&env, &id) {
-                if attestation.deleted { continue; }
-                if let Some(j) = attestation.jurisdiction {
-                    if j == jurisdiction {
-                        result.push_back(id.clone());
+                if attestation.deleted {
+                    continue;
+                }
+                if let Some(att_jurisdiction) = attestation.jurisdiction {
+                    if att_jurisdiction == jurisdiction {
+                        filtered.push_back(id.clone());
                     }
                 }
             }
         }
-        result
+
+        crate::storage::paginate(&env, filtered, start, limit)
     }
 
     #[must_use]
