@@ -1,49 +1,6 @@
-use soroban_sdk::{symbol_short, Address, Env, String, Symbol};
+use soroban_sdk::{symbol_short, Address, Env, String};
 
 use crate::types::{Attestation, IssuerTier};
-
-// ---------------------------------------------------------------------------
-// Event topic string constants — single source of truth for all topic names.
-// Use these constants when filtering events off-chain or in tests.
-// ---------------------------------------------------------------------------
-pub const TOPIC_ADM_INIT: &str = "adm_init";
-pub const TOPIC_CREATED: &str = "created";
-pub const TOPIC_IMPORTED: &str = "imported";
-pub const TOPIC_BRIDGED: &str = "bridged";
-pub const TOPIC_REVOKED: &str = "revoked";
-pub const TOPIC_RENEWED: &str = "renewed";
-pub const TOPIC_UPDATED: &str = "updated";
-pub const TOPIC_DEL_REQ: &str = "del_req";
-pub const TOPIC_EXPIRED: &str = "expired";
-pub const TOPIC_ISS_REG: &str = "iss_reg";
-pub const TOPIC_ISS_TIER: &str = "iss_tier";
-pub const TOPIC_ISS_REM: &str = "iss_rem";
-pub const TOPIC_CLMTYPE: &str = "clmtype";
-pub const TOPIC_MS_PROP: &str = "ms_prop";
-pub const TOPIC_MS_SIGN: &str = "ms_sign";
-pub const TOPIC_ADM_XFER: &str = "adm_xfer";
-pub const TOPIC_ADM_ADD: &str = "adm_add";
-pub const TOPIC_ADM_REM: &str = "adm_rem";
-pub const TOPIC_MS_ACTV: &str = "ms_actv";
-pub const TOPIC_ENDORSED: &str = "endorsed";
-pub const TOPIC_EXP_HOOK: &str = "exp_hook";
-pub const TOPIC_ATT_XFER: &str = "att_xfer";
-pub const TOPIC_PAUSED: &str = "paused";
-pub const TOPIC_UNPAUSED: &str = "unpaused";
-pub const TOPIC_REQ: &str = "req";
-pub const TOPIC_REQ_OK: &str = "req_ok";
-pub const TOPIC_REQ_NO: &str = "req_no";
-pub const TOPIC_DEL_CRTD: &str = "del_crtd";
-pub const TOPIC_DEL_RVKD: &str = "del_rvkd";
-pub const TOPIC_WL_ON: &str = "wl_on";
-pub const TOPIC_WL_ADD: &str = "wl_add";
-pub const TOPIC_WL_REM: &str = "wl_rem";
-
-/// Helper: convert a topic constant to a Soroban `Symbol` at runtime.
-/// Use this in tests and off-chain code to match against emitted events.
-pub fn topic(env: &Env, name: &str) -> Symbol {
-    Symbol::new(env, name)
-}
 
 pub struct Events;
 
@@ -325,7 +282,6 @@ impl Events {
         old_issuer: &Address,
         new_issuer: &Address,
     ) {
-        // TOPIC_ATT_XFER
         env.events().publish(
             (symbol_short!("att_xfer"), old_issuer.clone()),
             (attestation_id.clone(), new_issuer.clone()),
