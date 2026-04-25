@@ -1,75 +1,6 @@
-use soroban_sdk::{symbol_short, Address, Env, String, Symbol};
+use soroban_sdk::{symbol_short, Address, Env, String};
 
 use crate::types::{Attestation, IssuerTier};
-
-// ---------------------------------------------------------------------------
-// Event topic constants
-// All event topic symbols are defined here as named constants so they are
-// never scattered as raw literals across the codebase.
-// ---------------------------------------------------------------------------
-
-/// Admin initialized the contract.
-const TOPIC_ADMIN_INIT: Symbol = symbol_short!("adm_init");
-/// Attestation created.
-const TOPIC_CREATED: Symbol = symbol_short!("created");
-/// Attestation imported from an external source.
-const TOPIC_IMPORTED: Symbol = symbol_short!("imported");
-/// Attestation bridged from another chain.
-const TOPIC_BRIDGED: Symbol = symbol_short!("bridged");
-/// Attestation revoked.
-const TOPIC_REVOKED: Symbol = symbol_short!("revoked");
-/// Attestation renewed (expiration updated by issuer).
-const TOPIC_RENEWED: Symbol = symbol_short!("renewed");
-/// Attestation expiration updated.
-const TOPIC_UPDATED: Symbol = symbol_short!("updated");
-/// Attestation expired (emitted lazily on status check).
-const TOPIC_EXPIRED: Symbol = symbol_short!("expired");
-/// Subject requested GDPR deletion of an attestation.
-const TOPIC_DEL_REQ: Symbol = symbol_short!("del_req");
-/// Issuer registered.
-const TOPIC_ISS_REG: Symbol = symbol_short!("iss_reg");
-/// Issuer tier updated.
-const TOPIC_ISS_TIER: Symbol = symbol_short!("iss_tier");
-/// Issuer removed.
-const TOPIC_ISS_REM: Symbol = symbol_short!("iss_rem");
-/// Claim type registered.
-const TOPIC_CLM_TYPE: Symbol = symbol_short!("clmtype");
-/// Multi-sig proposal created.
-const TOPIC_MS_PROP: Symbol = symbol_short!("ms_prop");
-/// Multi-sig proposal co-signed.
-const TOPIC_MS_SIGN: Symbol = symbol_short!("ms_sign");
-/// Multi-sig proposal activated (threshold reached).
-const TOPIC_MS_ACTV: Symbol = symbol_short!("ms_actv");
-/// Admin rights transferred.
-const TOPIC_ADM_XFER: Symbol = symbol_short!("adm_xfer");
-/// Admin added to council.
-const TOPIC_ADM_ADD: Symbol = symbol_short!("adm_add");
-/// Admin removed from council.
-const TOPIC_ADM_REM: Symbol = symbol_short!("adm_rem");
-/// Attestation endorsed by a registered issuer.
-const TOPIC_ENDORSED: Symbol = symbol_short!("endorsed");
-/// Expiration hook triggered for a subject.
-const TOPIC_EXP_HOOK: Symbol = symbol_short!("exp_hook");
-/// Contract paused.
-const TOPIC_PAUSED: Symbol = symbol_short!("paused");
-/// Contract unpaused.
-const TOPIC_UNPAUSED: Symbol = symbol_short!("unpaused");
-/// Subject submitted an attestation request.
-const TOPIC_REQ: Symbol = symbol_short!("req");
-/// Issuer fulfilled an attestation request.
-const TOPIC_REQ_OK: Symbol = symbol_short!("req_ok");
-/// Issuer rejected an attestation request.
-const TOPIC_REQ_NO: Symbol = symbol_short!("req_no");
-/// Delegation created from issuer to sub-issuer.
-const TOPIC_DEL_CREATED: Symbol = symbol_short!("dlg_new");
-/// Delegation revoked.
-const TOPIC_DEL_REVOKED: Symbol = symbol_short!("dlg_rev");
-/// Whitelist mode enabled for an issuer.
-const TOPIC_WL_ON: Symbol = symbol_short!("wl_on");
-/// Subject added to issuer whitelist.
-const TOPIC_WL_ADD: Symbol = symbol_short!("wl_add");
-/// Subject removed from issuer whitelist.
-const TOPIC_WL_REM: Symbol = symbol_short!("wl_rem");
 
 pub struct Events;
 
@@ -124,12 +55,14 @@ impl Events {
         );
     }
 
-    pub fn attestation_revoked(
-        env: &Env,
-        attestation_id: &String,
-        issuer: &Address,
-        reason: &Option<String>,
-    ) {
+    pub fn deletion_requested(env: &Env, attestation_id: &String, subject: &Address) {
+        env.events().publish(
+            (symbol_short!("del_req"), subject.clone()),
+            attestation_id.clone(),
+        );
+    }
+
+    pub fn attestation_revoked(env: &Env, attestation_id: &String, issuer: &Address, reason: &Option<String>) {
         env.events().publish(
             (TOPIC_REVOKED, issuer.clone()),
             (attestation_id.clone(), reason.clone()),
@@ -278,6 +211,27 @@ impl Events {
         );
     }
 
+    /// Emitted when a multi-sig proposal reaches threshold and the attestation is activated.
+    pub fn multisig_activated(env: &Env, proposal_id: &String, attestation_id: &String) {
+        env.events().publish(
+            (symbol_short!("ms_actv"),),
+            (proposal_id.clone(), attestation_id.clone()),
+        );
+    }
+
+    /// Emitted when admin transfers an attestation to a new issuer.
+    pub fn attestation_transferred(
+        env: &Env,
+        attestation_id: &String,
+        old_issuer: &Address,
+        new_issuer: &Address,
+    ) {
+        env.events().publish(
+            (symbol_short!("att_xfer"), old_issuer.clone()),
+            (attestation_id.clone(), new_issuer.clone()),
+        );
+    }
+
     /// Emitted when a registered issuer endorses an existing attestation.
     pub fn attestation_endorsed(
         env: &Env,
@@ -307,13 +261,21 @@ impl Events {
     /// Emitted when the admin pauses the contract.
     pub fn contract_paused(env: &Env, admin: &Address, timestamp: u64) {
         env.events()
-            .publish((TOPIC_PAUSED,), (admin.clone(), timestamp));
+            .publish((symbol_short!("paused"), admin.clone()), timestamp);
     }
 
     /// Emitted when the admin unpauses the contract.
     pub fn contract_unpaused(env: &Env, admin: &Address, timestamp: u64) {
         env.events()
-            .publish((TOPIC_UNPAUSED,), (admin.clone(), timestamp));
+            .publish((symbol_short!("unpaused"), admin.clone()), timestamp);
+    }
+
+    /// Emitted when a subject requests deletion of their attestation.
+    pub fn deletion_requested(env: &Env, subject: &Address, attestation_id: &String, timestamp: u64) {
+        env.events().publish(
+            (symbol_short!("del_req"), subject.clone()),
+            (attestation_id.clone(), timestamp),
+        );
     }
 
     /// Emitted when a subject submits an attestation request to an issuer.
@@ -371,7 +333,7 @@ impl Events {
         expiration: Option<u64>,
     ) {
         env.events().publish(
-            (TOPIC_DEL_CREATED, delegator.clone()),
+            (symbol_short!("del_crtd"), delegator.clone()),
             (delegate.clone(), claim_type.clone(), expiration),
         );
     }
@@ -384,7 +346,7 @@ impl Events {
         claim_type: &String,
     ) {
         env.events().publish(
-            (TOPIC_DEL_REVOKED, delegator.clone()),
+            (symbol_short!("del_rvkd"), delegator.clone()),
             (delegate.clone(), claim_type.clone()),
         );
     }
@@ -397,5 +359,33 @@ impl Events {
     pub fn whitelist_updated(env: &Env, issuer: &Address, subject: &Address, added: bool) {
         let sym = if added { TOPIC_WL_ADD } else { TOPIC_WL_REM };
         env.events().publish((sym, issuer.clone()), subject.clone());
+    }
+
+    pub fn council_initialized(env: &Env, quorum: u32, member_count: u32) {
+        env.events().publish(
+            (symbol_short!("cncl_ini"),),
+            (quorum, member_count),
+        );
+    }
+
+    pub fn proposal_created(env: &Env, proposal_id: u32, proposer: &Address) {
+        env.events().publish(
+            (symbol_short!("prop_new"), proposer.clone()),
+            proposal_id,
+        );
+    }
+
+    pub fn proposal_approved(env: &Env, proposal_id: u32, approver: &Address) {
+        env.events().publish(
+            (symbol_short!("prop_ok"), approver.clone()),
+            proposal_id,
+        );
+    }
+
+    pub fn proposal_executed(env: &Env, proposal_id: u32) {
+        env.events().publish(
+            (symbol_short!("prop_exe"),),
+            proposal_id,
+        );
     }
 }
