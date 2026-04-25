@@ -31,7 +31,8 @@
 use crate::types::{
     AdminCouncil, Attestation, AttestationRequest, AuditEntry, ClaimTypeInfo, Delegation,
     Endorsement, Error, ExpirationHook, FeeConfig, GlobalStats, IssuerMetadata, IssuerStats,
-    IssuerTier, MultiSigProposal, RateLimitConfig, StorageLimits, TtlConfig,
+    IssuerTier, MultiSigProposal, PendingAdminTransfer, RateLimitConfig, StorageLimits, TtlConfig,
+    CouncilProposal,
 };
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
@@ -96,6 +97,16 @@ pub enum StorageKey {
     Paused,
     /// Delegation key (delegator, delegate, claim_type).
     Delegation(Address, Address, String),
+    /// Council proposal by numeric ID.
+    CouncilProposal(u32),
+    /// Counter for council proposal IDs.
+    ProposalCounter,
+    /// Pending admin transfer (two-step pattern).
+    PendingAdminTransfer,
+    /// Attestation template key (issuer, template_name).
+    AttestationTemplate(Address, String),
+    /// List of template names for an issuer.
+    AttestationTemplateList(Address),
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -451,9 +462,36 @@ impl Storage {
         env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 
+    /// Return `true` if whitelist mode is enabled for `issuer`.
+    pub fn is_whitelist_mode(env: &Env, issuer: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::IssuerWhitelistMode(issuer.clone()))
+            .unwrap_or(false)
+    }
+
+    /// Return `true` if `subject` is on `issuer`'s whitelist.
+    pub fn is_whitelisted(env: &Env, issuer: &Address, subject: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .has(&StorageKey::IssuerWhitelist(issuer.clone(), subject.clone()))
+    }
+
+    /// Remove `subject` from `issuer`'s whitelist.
+    pub fn remove_from_whitelist(env: &Env, issuer: &Address, subject: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::IssuerWhitelist(issuer.clone(), subject.clone()));
+    }
+
     /// Retrieve the admin council, or `None` if not initialized.
     pub fn get_council(env: &Env) -> Option<AdminCouncil> {
         env.storage().instance().get(&StorageKey::AdminCouncil)
+    }
+
+    /// Persist the admin council (alias for set_admin_council).
+    pub fn set_council(env: &Env, council: &AdminCouncil) {
+        Self::set_admin_council(env, council);
     }
 
     /// Add `subject` to `issuer`'s whitelist.
@@ -469,6 +507,14 @@ impl Storage {
         env.storage().persistent().get(&StorageKey::CouncilProposal(id))
     }
 
+    /// Persist a council proposal.
+    pub fn set_proposal(env: &Env, proposal: &CouncilProposal) {
+        let key = StorageKey::CouncilProposal(proposal.id);
+        let ttl = get_ttl_lifetime(env);
+        env.storage().persistent().set(&key, proposal);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
     /// Increment and return the next proposal ID.
     pub fn next_proposal_id(env: &Env) -> u32 {
         let current: u32 = env.storage().instance().get(&StorageKey::ProposalCounter).unwrap_or(0);
@@ -477,10 +523,26 @@ impl Storage {
         next
     }
 
+    // ── Pending admin transfer (two-step pattern) ─────────────────────────────
+
+    pub fn get_pending_admin_transfer(env: &Env) -> Option<PendingAdminTransfer> {
+        env.storage().instance().get(&StorageKey::PendingAdminTransfer)
+    }
+
+    pub fn set_pending_admin_transfer(env: &Env, transfer: &PendingAdminTransfer) {
+        let ttl = get_ttl_lifetime(env);
+        env.storage().instance().set(&StorageKey::PendingAdminTransfer, transfer);
+        env.storage().instance().extend_ttl(ttl, ttl);
+    }
+
+    pub fn remove_pending_admin_transfer(env: &Env) {
+        env.storage().instance().remove(&StorageKey::PendingAdminTransfer);
+    }
+
     /// Set the contract paused flag.
     pub fn set_paused(env: &Env, paused: bool) {
         env.storage().instance().set(&StorageKey::Paused, &paused);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME, INSTANCE_LIFETIME);
+        env.storage().instance().extend_ttl(DEFAULT_INSTANCE_LIFETIME, DEFAULT_INSTANCE_LIFETIME);
     }
 
     /// Return `true` if the contract is paused.
@@ -582,21 +644,6 @@ impl Storage {
         let ttl = get_ttl_lifetime(env);
         env.storage().persistent().set(&key, tier);
         env.storage().persistent().extend_ttl(&key, ttl, ttl);
-    }
-
-    // ── Paused flag ───────────────────────────────────────────────────────────
-
-    pub fn is_paused(env: &Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&StorageKey::Paused)
-            .unwrap_or(false)
-    }
-
-    pub fn set_paused(env: &Env, paused: bool) {
-        let ttl = get_ttl_lifetime(env);
-        env.storage().instance().set(&StorageKey::Paused, &paused);
-        env.storage().instance().extend_ttl(ttl, ttl);
     }
 
     // ── Storage limits ────────────────────────────────────────────────────────
