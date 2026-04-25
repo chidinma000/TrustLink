@@ -22,7 +22,6 @@ use crate::types::{
 };
 use crate::validation::Validation;
 
-const SECS_PER_DAY: u64 = 86_400;
 const MAX_SOURCE_CHAIN_LEN: u32 = 32;
 const MAX_SOURCE_TX_LEN: u32 = 128;
 

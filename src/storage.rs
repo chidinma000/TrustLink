@@ -84,12 +84,10 @@ pub enum StorageKey {
     Paused,
 }
 
-const DAY_IN_LEDGERS: u32 = 17280;
-const DEFAULT_TTL_DAYS: u32 = 30;
 const DEFAULT_INSTANCE_LIFETIME: u32 = DAY_IN_LEDGERS * DEFAULT_TTL_DAYS;
 // Only extend TTL on read if remaining TTL drops below this threshold (7 days)
 #[allow(dead_code)]
-const MIN_TTL_THRESHOLD: u32 = 7 * DAY_IN_LEDGERS;
+const MIN_TTL_THRESHOLD: u32 = MIN_TTL_THRESHOLD_LEDGERS;
 
 /// Get the TTL in ledgers for the configured number of days.
 fn get_ttl_lifetime(env: &Env) -> u32 {
@@ -418,8 +416,54 @@ impl Storage {
     pub fn set_multisig_ttl_days(env: &Env, days: u32) {
         let key = StorageKey::MultisigTtlDays;
         let ttl = get_ttl_lifetime(env);
-        env.storage().instance().set(&key, &days);
-        env.storage().instance().extend_ttl(ttl, ttl);
+        env.storage().persistent().set(&key, &true);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Retrieve a council proposal by ID.
+    pub fn get_proposal(env: &Env, id: u32) -> Option<CouncilProposal> {
+        env.storage().persistent().get(&StorageKey::CouncilProposal(id))
+    }
+
+    /// Increment and return the next proposal ID.
+    pub fn next_proposal_id(env: &Env) -> u32 {
+        let current: u32 = env.storage().instance().get(&StorageKey::ProposalCounter).unwrap_or(0);
+        let next = current + 1;
+        env.storage().instance().set(&StorageKey::ProposalCounter, &next);
+        next
+    }
+
+    /// Set the contract paused flag.
+    pub fn set_paused(env: &Env, paused: bool) {
+        env.storage().instance().set(&StorageKey::Paused, &paused);
+        env.storage().instance().extend_ttl(DEFAULT_INSTANCE_LIFETIME, DEFAULT_INSTANCE_LIFETIME);
+    }
+
+    /// Return `true` if the contract is paused.
+    pub fn is_paused(env: &Env) -> bool {
+        env.storage().instance().get(&StorageKey::Paused).unwrap_or(false)
+    }
+
+    // ── Whitelist aliases used by lib.rs ──────────────────────────────────────
+
+    pub fn set_whitelist_enabled(env: &Env, issuer: &Address, enabled: bool) {
+        Self::set_whitelist_mode(env, issuer, enabled);
+    }
+
+    pub fn is_whitelist_enabled(env: &Env, issuer: &Address) -> bool {
+        Self::is_whitelist_mode(env, issuer)
+    }
+
+    pub fn add_subject_to_whitelist(env: &Env, issuer: &Address, subject: &Address) {
+        Self::add_to_whitelist(env, issuer, subject);
+    }
+
+    pub fn remove_subject_from_whitelist(env: &Env, issuer: &Address, subject: &Address) {
+        Self::remove_from_whitelist(env, issuer, subject);
+    }
+
+    pub fn is_subject_whitelisted(env: &Env, issuer: &Address, subject: &Address) -> bool {
+        Self::is_whitelisted(env, issuer, subject)
     }
 
     // -------------------------------------------------------------------------
