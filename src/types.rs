@@ -55,8 +55,6 @@ impl IssuerTier {
     }
 }
 
-use soroban_sdk::{contracterror, contracttype, Address, Env, String, Vec};
-
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractMetadata {
@@ -72,16 +70,6 @@ pub struct ClaimTypeInfo {
     pub description: String,
 }
 
-/// The admin council configuration: member list and quorum threshold.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminCouncil {
-    /// Addresses eligible to vote on council proposals.
-    pub members: Vec<Address>,
-    /// Minimum approvals required to execute a proposal.
-    pub quorum: u32,
-}
-
 /// Operations that require council quorum approval.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,24 +78,6 @@ pub enum CouncilOperation {
     PauseContract,
 }
 
-/// Describes how an attestation entered the system.
-///
-/// Replaces the previous `imported: bool` and `bridged: bool` fields, which
-/// were mutually exclusive and left the "native" state implicit.
-///
-/// # Variants
-/// - `Native`   — created directly by a registered issuer via `create_attestation`.
-/// - `Imported` — migrated from an external verified source by the admin via `import_attestation`.
-/// - `Bridged`  — mirrored from another chain by a trusted bridge contract via `bridge_attestation`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AttestationOrigin {
-    Native,
-    Imported,
-    Bridged,
-/// Lightweight health status returned by `health_check`.
-///
-/// No authentication required — designed for monitoring dashboards and uptime probes.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CouncilProposal {
@@ -118,7 +88,7 @@ pub struct CouncilProposal {
     pub executed: bool,
 }
 
-/// A single attestation record stored on-chain.
+/// Describes how an attestation entered the system.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttestationOrigin {
@@ -127,6 +97,7 @@ pub enum AttestationOrigin {
     Bridged,
 }
 
+/// A single attestation record stored on-chain.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
@@ -137,9 +108,6 @@ pub struct Attestation {
     pub timestamp: u64,
     pub expiration: Option<u64>,
     pub revoked: bool,
-    /// Set to `true` by `request_deletion` (GDPR right-to-erasure soft delete).
-    /// Deleted attestations are excluded from all query results.
-    pub deleted: bool,
     pub metadata: Option<String>,
     pub jurisdiction: Option<String>,
     pub valid_from: Option<u64>,
@@ -241,13 +209,99 @@ pub struct MultiSigProposal {
     pub finalized: bool,
 }
 
+/// Admin council: ordered list of admin addresses.
 pub type AdminCouncil = Vec<Address>;
 
+/// Attestation fee configuration.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeConfig {
+    pub attestation_fee: i128,
+    pub fee_collector: Address,
+    pub fee_token: Option<Address>,
+}
+
+/// TTL configuration (days).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TtlConfig {
+    pub ttl_days: u32,
+}
+
+/// Contract-wide running counters.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GlobalStats {
+    pub total_attestations: u64,
+    pub total_revocations: u64,
+    pub total_issuers: u64,
+}
+
+/// Per-issuer statistics.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerStats {
+    pub total_issued: u64,
+}
+
+/// Rate-limit configuration for attestation creation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateLimitConfig {
+    /// Minimum seconds between attestation creations per issuer.
+    pub min_issuance_interval: u64,
+}
+
+/// Lightweight health status returned by `health_check`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthStatus {
+    pub initialized: bool,
+    pub admin_set: bool,
+    pub issuer_count: u64,
+    pub total_attestations: u64,
+}
+
+/// Optional metadata associated with a registered issuer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerMetadata {
+    pub name: String,
+    pub url: String,
+    pub description: String,
+}
+
+/// Expiration hook registered by a subject to be notified before attestation expiry.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpirationHook {
+    /// The callback contract to notify.
+    pub callback_contract: Address,
+    /// How many days before expiry to trigger the notification.
+    pub notify_days_before: u32,
+}
+
+/// Aggregate contract configuration returned by `get_config`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractConfig {
+    pub contract_name: String,
+    pub contract_version: String,
+    pub contract_description: String,
+    pub fee_config: FeeConfig,
+    pub ttl_config: TtlConfig,
+}
+
+/// Storage key for the pending admin transfer (two-step pattern).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingAdminTransfer {
+    pub proposed_by: Address,
+    pub new_admin: Address,
+}
+
 impl Attestation {
-    /// Hashes an arbitrary byte payload and returns a 32-character lowercase hex string.
-    ///
-    /// Algorithm: SHA-256 over the XDR-encoded payload, digest truncated to the first 16 bytes,
-    /// hex-encoded to a 32-character lowercase string.
+    /// Hashes an arbitrary byte payload and returns a 64-character lowercase hex string.
     pub fn hash_payload(env: &Env, payload: &Bytes) -> String {
         let hash = env.crypto().sha256(payload).to_array();
         const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -260,8 +314,6 @@ impl Attestation {
     }
 
     /// Generates a deterministic attestation ID from the given inputs.
-    ///
-    /// XDR field order: `issuer | subject | claim_type | timestamp`
     pub fn generate_id(
         env: &Env,
         issuer: &Address,
@@ -278,8 +330,6 @@ impl Attestation {
     }
 
     /// Generates a deterministic bridge attestation ID from the given inputs.
-    ///
-    /// XDR field order: `bridge | subject | claim_type | source_chain | source_tx | timestamp`
     pub fn generate_bridge_id(
         env: &Env,
         bridge: &Address,

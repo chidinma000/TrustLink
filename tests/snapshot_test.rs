@@ -91,7 +91,7 @@ fn snapshot_after_attestation_creation() {
     assert_eq!(att.issuer, issuer);
     assert_eq!(att.subject, subject);
     assert!(!att.revoked);
-    assert!(!att.imported);
+    assert_eq!(att.origin, trustlink::types::AttestationOrigin::Native);
     assert_eq!(client.get_global_stats().total_attestations, 1);
     assert_eq!(client.get_subject_attestations(&subject, &0, &10).len(), 1);
     assert_eq!(client.get_issuer_attestations(&issuer, &0, &10).len(), 1);
