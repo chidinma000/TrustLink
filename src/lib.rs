@@ -334,6 +334,46 @@ impl TrustLinkContract {
         Storage::get_issuer_tier(&env, &issuer)
     }
 
+    /// Set the trust tier of a registered issuer (admin only).
+    ///
+    /// Alias for `update_issuer_tier` using the name specified in the issue.
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`] — caller is not admin, or `issuer` is not registered.
+    pub fn set_issuer_tier(
+        env: Env,
+        admin: Address,
+        issuer: Address,
+        tier: IssuerTier,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        Validation::require_admin(&env, &admin)?;
+        Validation::require_issuer(&env, &issuer)?;
+        Storage::set_issuer_tier(&env, &issuer, &tier);
+        Events::issuer_tier_updated(&env, &issuer, &tier);
+        Ok(())
+    }
+
+    /// Return a confidence score (0–100) for an attestation based on:
+    /// - Issuer tier: Basic=30, Verified=60, Premium=90
+    /// - Each endorsement adds 2 points (capped at 10 points total from endorsements)
+    ///
+    /// Returns `None` if the attestation does not exist.
+    pub fn get_confidence_score(env: Env, attestation_id: String) -> Option<u32> {
+        let attestation = Storage::get_attestation(&env, &attestation_id).ok()?;
+
+        let tier_score = match Storage::get_issuer_tier(&env, &attestation.issuer) {
+            Some(IssuerTier::Premium) => 90u32,
+            Some(IssuerTier::Verified) => 60u32,
+            Some(IssuerTier::Basic) | None => 30u32,
+        };
+
+        let endorsement_count = Storage::get_endorsements(&env, &attestation_id).len();
+        let endorsement_bonus = (endorsement_count * 2).min(10);
+
+        Some((tier_score + endorsement_bonus).min(100))
+    }
+
     /// Return `true` if `subject` holds a valid `claim_type` attestation issued
     /// by an issuer whose tier is >= `min_tier`.
     #[must_use]
@@ -1389,6 +1429,45 @@ impl TrustLinkContract {
     ) -> Result<String, Error> {
         proposer.require_auth();
         Validation::require_issuer(&env, &proposer)?;
+
+        // Premium issuers bypass multi-sig for ACCREDITED_INVESTOR claims.
+        let is_accredited = claim_type == String::from_str(&env, "ACCREDITED_INVESTOR");
+        let is_premium = matches!(
+            Storage::get_issuer_tier(&env, &proposer),
+            Some(IssuerTier::Premium)
+        );
+        if is_accredited && is_premium {
+            let timestamp = env.ledger().timestamp();
+            let attestation_id =
+                Attestation::generate_id(&env, &proposer, &subject, &claim_type, timestamp);
+            if Storage::has_attestation(&env, &attestation_id) {
+                return Err(Error::DuplicateAttestation);
+            }
+            let attestation = Attestation {
+                id: attestation_id.clone(),
+                issuer: proposer.clone(),
+                subject,
+                claim_type,
+                timestamp,
+                expiration: None,
+                revoked: false,
+                metadata: None,
+                jurisdiction: None,
+                valid_from: None,
+                imported: false,
+                bridged: false,
+                source_chain: None,
+                source_tx: None,
+                tags: None,
+                revocation_reason: None,
+                deleted: false,
+            };
+            store_attestation(&env, &attestation);
+            Events::attestation_created(&env, &attestation);
+            return Ok(attestation_id);
+        }
+
+        // Validate all required signers are registered issuers.
         for signer in required_signers.iter() {
             Validation::require_issuer(&env, &signer)?;
         }
