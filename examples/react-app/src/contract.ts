@@ -251,3 +251,29 @@ export async function cosignAttestation(
 export async function getMultiSigProposal(proposalId: string): Promise<MultiSigProposal> {
   return simulate("get_multisig_proposal", str(proposalId));
 }
+
+// ── issuer stats ─────────────────────────────────────────────────────────────
+
+export interface IssuerStats {
+  total_issued: number;
+  active: number;
+  revoked: number;
+  expired: number;
+}
+
+export async function getIssuerStats(issuer: string): Promise<IssuerStats> {
+  return simulate("get_issuer_stats", addr(issuer));
+}
+
+export async function getExpiringAttestations(
+  issuer: string,
+  daysWindow: number
+): Promise<Attestation[]> {
+  return simulate(
+    "get_issuer_expiring_attestations",
+    addr(issuer),
+    nativeToScVal(daysWindow, { type: "u32" }),
+    nativeToScVal(0, { type: "u32" }),
+    nativeToScVal(50, { type: "u32" })
+  );
+}
