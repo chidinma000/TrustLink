@@ -74,15 +74,22 @@ pub enum StorageKey {
     Endorsements(String),
     Limits,
     RateLimitConfig,
-    LastIssuanceTime(Address),
-    MultisigProposal(String),
-    AuditLog(String),
-    WhitelistEnabled(Address),
-    Whitelist(Address, Address),
-    Request(String),
-    PendingRequests(Address),
+    /// Timestamp of the last attestation issuance by an issuer.
+    LastIssuance(Address),
+    /// Whether whitelist mode is enabled for an issuer (alias used by lib.rs).
+    IssuerWhitelistEnabled(Address),
+    /// An attestation request record.
+    AttestationRequest(String),
+    /// Ordered list of pending request IDs for an issuer.
+    IssuerPendingRequests(Address),
+    /// Delegation record.
     Delegation(Address, Address, String),
-    Paused,
+    /// Pending requests for an issuer (alias).
+    PendingRequests(Address),
+    /// Last issuance timestamp for rate limiting (alias).
+    LastIssuanceTime(Address),
+    /// Storage limits configuration (alias).
+    Limits,
 }
 
 /// Get the TTL in ledgers for the configured number of days.
@@ -408,11 +415,63 @@ impl Storage {
             .unwrap_or(Vec::new(env))
     }
 
-    /// Persist the multisig proposal TTL in days.
-    pub fn set_multisig_ttl_days(env: &Env, days: u32) {
-        let key = StorageKey::MultisigTtlDays;
+    /// Enable or disable whitelist mode for an issuer.
+    pub fn set_whitelist_mode(env: &Env, issuer: &Address, enabled: bool) {
+        let key = StorageKey::IssuerWhitelistMode(issuer.clone());
         let ttl = get_ttl_lifetime(env);
-        env.storage().persistent().set(&key, &true);
+        env.storage().persistent().set(&key, &enabled);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Retrieve the admin council, or `None` if not initialized.
+    pub fn get_council(env: &Env) -> Option<AdminCouncil> {
+        env.storage().instance().get(&StorageKey::AdminCouncil)
+    }
+
+    /// Enable or disable whitelist mode (alias used by lib.rs).
+    pub fn set_whitelist_enabled(env: &Env, issuer: &Address, enabled: bool) {
+        Self::set_whitelist_mode(env, issuer, enabled);
+    }
+
+    /// Return `true` if whitelist mode is enabled (alias used by lib.rs).
+    pub fn is_whitelist_enabled(env: &Env, issuer: &Address) -> bool {
+        Self::is_whitelist_mode(env, issuer)
+    }
+
+    /// Return `true` if whitelist mode is enabled for `issuer`.
+    pub fn is_whitelist_mode(env: &Env, issuer: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::IssuerWhitelistMode(issuer.clone()))
+            .unwrap_or(false)
+    }
+
+    /// Remove `subject` from `issuer`'s whitelist.
+    pub fn remove_from_whitelist(env: &Env, issuer: &Address, subject: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::IssuerWhitelist(issuer.clone(), subject.clone()));
+    }
+
+    /// Return `true` if `subject` is whitelisted for `issuer`.
+    pub fn is_whitelisted(env: &Env, issuer: &Address, subject: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .has(&StorageKey::IssuerWhitelist(issuer.clone(), subject.clone()))
+    }
+
+    /// Remove `attestation_id` from `issuer`'s attestation index.
+    pub fn remove_issuer_attestation(env: &Env, issuer: &Address, attestation_id: &String) {
+        let key = StorageKey::IssuerAttestations(issuer.clone());
+        let ttl = get_ttl_lifetime(env);
+        let existing = Self::get_issuer_attestations(env, issuer);
+        let mut updated = Vec::new(env);
+        for id in existing.iter() {
+            if &id != attestation_id {
+                updated.push_back(id);
+            }
+        }
+        env.storage().persistent().set(&key, &updated);
         env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 
