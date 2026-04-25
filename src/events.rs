@@ -336,31 +336,20 @@ impl Events {
         );
     }
 
-    pub fn council_initialized(env: &Env, quorum: u32, member_count: u32) {
+    /// Emitted when an attestation is transferred from one issuer to another.
+    ///
+    /// **Event Schema:**
+    /// - **Topics:** `("att_xfer", old_issuer: Address)`
+    /// - **Data:** `(attestation_id: String, new_issuer: Address)`
+    pub fn attestation_transferred(
+        env: &Env,
+        attestation_id: &String,
+        old_issuer: &Address,
+        new_issuer: &Address,
+    ) {
         env.events().publish(
-            (symbol_short!("cncl_ini"),),
-            (quorum, member_count),
-        );
-    }
-
-    pub fn proposal_created(env: &Env, proposal_id: u32, proposer: &Address) {
-        env.events().publish(
-            (symbol_short!("prop_new"), proposer.clone()),
-            proposal_id,
-        );
-    }
-
-    pub fn proposal_approved(env: &Env, proposal_id: u32, approver: &Address) {
-        env.events().publish(
-            (symbol_short!("prop_ok"), approver.clone()),
-            proposal_id,
-        );
-    }
-
-    pub fn proposal_executed(env: &Env, proposal_id: u32) {
-        env.events().publish(
-            (symbol_short!("prop_exe"),),
-            proposal_id,
+            (symbol_short!("att_xfer"), old_issuer.clone()),
+            (attestation_id.clone(), new_issuer.clone()),
         );
     }
 }
