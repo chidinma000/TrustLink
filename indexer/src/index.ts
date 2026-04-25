@@ -9,6 +9,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { startIndexer, getLastLedger } from "./indexer";
 import { buildResolvers } from "./graphql";
+import { getMetrics } from "./metrics";
 
 const db = new PrismaClient();
 
@@ -54,6 +55,11 @@ async function main() {
       return { status: 200 };
     }
     return { status: 503 };
+  });
+
+  fastify.get("/metrics", async () => {
+    const metrics = await getMetrics();
+    return metrics;
   });
 
   fastify.get<{ Params: { subject: string } }>(

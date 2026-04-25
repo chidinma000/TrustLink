@@ -1,6 +1,12 @@
 import { PrismaClient } from "@prisma/client";
 import { rpc as SorobanRpc, scValToNative } from "@stellar/stellar-sdk";
 import { pubsub, ATTESTATION_CREATED } from "./graphql";
+import {
+  attestationsTotal,
+  revocationsTotal,
+  eventsProcessedTotal,
+  indexerLagLedgers,
+} from "./metrics";
 
 const CONTRACT_ID = process.env.CONTRACT_ID!;
 const RPC_URL = process.env.RPC_URL ?? "https://soroban-testnet.stellar.org";
@@ -36,6 +42,7 @@ export async function startIndexer(db: PrismaClient): Promise<void> {
     const { sequence: latest } = await rpc.getLatestLedger();
     if (cursor <= latest) {
       cursor = await processRange(db, rpc, cursor, latest);
+      indexerLagLedgers.set(latest - cursor);
     }
   }
 }
@@ -92,6 +99,7 @@ async function handleEvent(
   const topicStr = scValToNative(ev.topic[0]) as string;
   if (!WATCHED.has(topicStr)) return;
 
+  eventsProcessedTotal.inc();
   const data = scValToNative(ev.value) as unknown[];
 
   if (topicStr === "revoked") {
@@ -101,6 +109,7 @@ async function handleEvent(
       where: { id: attestationId },
       data: { isRevoked: true },
     });
+    revocationsTotal.inc();
     return;
   }
 
@@ -138,6 +147,8 @@ async function handleEvent(
       ...extra,
     },
   });
+
+  attestationsTotal.inc();
 
   // Publish to GraphQL subscriptions
   pubsub.publish(ATTESTATION_CREATED, {
