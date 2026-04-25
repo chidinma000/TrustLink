@@ -30,6 +30,23 @@ model Attestation {
   @@index([timestamp])
 }
 
+model MultisigProposal {
+  id              String   @id           // proposal ID from the contract
+  subject         String
+  proposer        String
+  claimType       String
+  threshold       Int
+  signers         String[] // array of signer addresses
+  signatureCount  Int      @default(1)
+  finalized       Boolean  @default(false)
+  expiresAt       BigInt
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([subject])
+  @@index([proposer])
+}
+
 // Singleton row (id=1) tracking the last fully-processed ledger sequence.
 model Checkpoint {
   id     Int @id @default(1)

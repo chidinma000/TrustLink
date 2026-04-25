@@ -24,6 +24,20 @@ type Attestation {
   updatedAt: String!
 }
 
+type MultisigProposal {
+  id: String!
+  subject: String!
+  proposer: String!
+  claimType: String!
+  threshold: Int!
+  signers: [String!]!
+  signatureCount: Int!
+  finalized: Boolean!
+  expiresAt: String!
+  createdAt: String!
+  updatedAt: String!
+}
+
 type IssuerStats {
   issuer: String!
   total: Int!
@@ -38,6 +52,12 @@ type Query {
 
   """Get statistics for a specific issuer"""
   issuerStats(issuer: String!): IssuerStats!
+
+  """Get a multi-sig proposal by ID"""
+  proposal(id: String!): MultisigProposal
+
+  """List all multi-sig proposals"""
+  proposals(subject: String, finalized: Boolean): [MultisigProposal!]!
 }
 
 type Subscription {

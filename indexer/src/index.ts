@@ -7,8 +7,9 @@ import { WebSocketServer } from "ws";
 import { useServer } from "graphql-ws/use/ws";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { startIndexer } from "./indexer";
+import { startIndexer, getLastLedger } from "./indexer";
 import { buildResolvers } from "./graphql";
+import { getMetrics } from "./metrics";
 
 const db = new PrismaClient();
 
@@ -27,23 +28,42 @@ async function main() {
   // ── REST (Fastify) ─────────────────────────────────────────────────────────
   const fastify = Fastify({ logger: true });
 
-  // GET /attestations/:id - Get a specific attestation
-  fastify.get<{ Params: { id: string } }>(
-    "/attestations/:id",
-    async (req) => {
-      const attestation = await db.attestation.findUnique({
-        where: { id: req.params.id },
-      });
-      if (!attestation) {
-        return { error: "Attestation not found" };
-      }
-      return attestation;
+  fastify.get("/health", async () => {
+    let dbConnected = false;
+    try {
+      await db.$queryRaw`SELECT 1`;
+      dbConnected = true;
+    } catch {
+      dbConnected = false;
     }
-  );
+    return {
+      status: "ok",
+      lastLedger: getLastLedger(),
+      dbConnected,
+    };
+  });
 
-  // GET /subjects/:address/attestations - Get all attestations for a subject
-  fastify.get<{ Params: { address: string } }>(
-    "/subjects/:address/attestations",
+  fastify.get("/ready", async () => {
+    const checkpoint = await db.checkpoint.findUnique({ where: { id: 1 } });
+    const rpc = new (await import("@stellar/stellar-sdk")).rpc.Server(
+      process.env.RPC_URL ?? "https://soroban-testnet.stellar.org",
+      { allowHttp: true }
+    );
+    const { sequence: tip } = await rpc.getLatestLedger();
+    const lag = tip - (checkpoint?.ledger ?? 0);
+    if (lag <= 10) {
+      return { status: 200 };
+    }
+    return { status: 503 };
+  });
+
+  fastify.get("/metrics", async () => {
+    const metrics = await getMetrics();
+    return metrics;
+  });
+
+  fastify.get<{ Params: { subject: string } }>(
+    "/attestations/:subject",
     async (req) => {
       return db.attestation.findMany({
         where: { subject: req.params.address },

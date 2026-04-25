@@ -1,5 +1,5 @@
 import { PubSub } from "graphql-subscriptions";
-import { PrismaClient, Attestation } from "@prisma/client";
+import { PrismaClient, Attestation, MultisigProposal } from "@prisma/client";
 
 export const pubsub = new PubSub();
 export const ATTESTATION_CREATED = "ATTESTATION_CREATED";
@@ -13,6 +13,12 @@ type MappedAttestation = Omit<Attestation, "timestamp" | "expiration" | "created
   updatedAt: string;
 };
 
+type MappedProposal = Omit<MultisigProposal, "expiresAt" | "createdAt" | "updatedAt"> & {
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 function mapAttestation(a: Attestation): MappedAttestation {
   return {
     ...a,
@@ -20,6 +26,15 @@ function mapAttestation(a: Attestation): MappedAttestation {
     expiration: a.expiration != null ? String(a.expiration) : null,
     createdAt: a.createdAt.toISOString(),
     updatedAt: a.updatedAt.toISOString(),
+  };
+}
+
+function mapProposal(p: MultisigProposal): MappedProposal {
+  return {
+    ...p,
+    expiresAt: String(p.expiresAt),
+    createdAt: p.createdAt.toISOString(),
+    updatedAt: p.updatedAt.toISOString(),
   };
 }
 
@@ -59,6 +74,28 @@ export function buildResolvers(db: PrismaClient) {
           revoked,
           claimTypes,
         };
+      },
+
+      proposal: async (_: unknown, args: { id: string }) => {
+        const proposal = await db.multisigProposal.findUnique({
+          where: { id: args.id },
+        });
+        return proposal ? mapProposal(proposal) : null;
+      },
+
+      proposals: async (
+        _: unknown,
+        args: { subject?: string; finalized?: boolean }
+      ) => {
+        const where: Record<string, unknown> = {};
+        if (args.subject) where.subject = args.subject;
+        if (args.finalized !== undefined) where.finalized = args.finalized;
+
+        const rows = await db.multisigProposal.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+        });
+        return rows.map(mapProposal);
       },
     },
 
