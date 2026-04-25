@@ -111,6 +111,19 @@ export interface ExpirationHook {
   notify_days_before: number;
 }
 
+export type RequestStatus = "Pending" | "Fulfilled" | "Rejected";
+
+export interface AttestationRequest {
+  id: string;
+  subject: string;
+  issuer: string;
+  claim_type: string;
+  timestamp: bigint;
+  expires_at: bigint;
+  status: RequestStatus;
+  rejection_reason: string | null;
+}
+
 /** Error codes returned by the TrustLink contract. */
 export enum TrustLinkError {
   AlreadyInitialized = 1,
